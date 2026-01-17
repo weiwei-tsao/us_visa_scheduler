@@ -104,18 +104,17 @@ def send_notification(title, msg):
 
     # Send message via Telegram
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        # Escape special characters for Markdown V2
-        def escape_markdown(text):
-            # Characters that need to be escaped in Markdown
-            escape_chars = r'_*[]()~`>#+-=|{}.!'
-            return ''.join('\\' + char if char in escape_chars else char for char in str(text))
+        # Use HTML formatting for better readability
+        def escape_html(text):
+            # Escape HTML special characters
+            return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        telegram_message = f"*{escape_markdown(title)}*\n\n{escape_markdown(msg)}"
+        telegram_message = f"<b>{escape_html(title)}</b>\n\n{escape_html(msg)}"
         telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         telegram_data = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": telegram_message,
-            "parse_mode": "MarkdownV2"
+            "parse_mode": "HTML"
         }
         try:
             response = requests.post(telegram_url, data=telegram_data)
