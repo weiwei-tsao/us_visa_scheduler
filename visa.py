@@ -168,7 +168,7 @@ def start_process():
     print("\n\tlogin successful!\n")
 
 def reschedule(date):
-    appointment_time = get_time(date)
+    appointment_time = get_time_with_retry(date)
     driver.get(APPOINTMENT_URL)
 
     # Wait for page to load
@@ -221,12 +221,92 @@ def reschedule(date):
     return [title, msg]
 
 
+def is_session_expired_error(error):
+    """
+    Detect if an error is related to session expiration.
+    Common indicators:
+    - JSON decode errors (empty response)
+    - HTTP 401/403 errors
+    - Specific error messages
+    """
+    error_str = str(error).lower()
+    session_error_indicators = [
+        'expecting value: line 1 column 1',  # Empty JSON response
+        'json.decoder.jsondecodeerror',
+        'empty response',  # Empty API response
+        '401',  # Unauthorized
+        '403',  # Forbidden
+        'unauthorized',
+        'session',
+        'expired'
+    ]
+    return any(indicator in error_str for indicator in session_error_indicators)
+
+
+def relogin():
+    """
+    Re-authenticate when session expires.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        print("\n[SESSION] Session expired or invalid. Attempting to re-login...")
+        log_file = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
+        info_logger(log_file, "[SESSION] Session expired. Re-authenticating...")
+
+        # Sign out first to clear old session
+        try:
+            driver.get(SIGN_OUT_LINK)
+            time.sleep(STEP_TIME)
+        except:
+            pass  # Ignore errors if already signed out
+
+        # Re-login
+        start_process()
+        print("[SESSION] Re-login successful!\n")
+        info_logger(log_file, "[SESSION] Re-login successful!")
+        return True
+    except Exception as e:
+        print(f"[SESSION] Re-login failed: {str(e)}")
+        log_file = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
+        info_logger(log_file, f"[SESSION] Re-login failed: {str(e)}")
+        return False
+
+
 def get_date():
     # Requesting to get the whole available dates
     session = driver.get_cookie("_yatri_session")["value"]
     script = JS_SCRIPT % (str(DATE_URL), session)
     content = driver.execute_script(script)
     return json.loads(content)
+
+
+def get_date_with_retry(max_retries=2):
+    """
+    Get available dates with automatic session retry on failure.
+    Detects session expiration and attempts re-login automatically.
+    """
+    for attempt in range(max_retries):
+        try:
+            session = driver.get_cookie("_yatri_session")["value"]
+            script = JS_SCRIPT % (str(DATE_URL), session)
+            content = driver.execute_script(script)
+
+            # Check if content is empty or invalid
+            if not content or content.strip() == '':
+                raise ValueError("Empty response from API")
+
+            return json.loads(content)
+        except Exception as e:
+            if is_session_expired_error(e) and attempt < max_retries - 1:
+                # Try to re-login
+                if relogin():
+                    continue  # Retry the API call
+                else:
+                    raise  # Re-login failed, propagate error
+            else:
+                # Not a session error or last retry, propagate error
+                raise
+
 
 def get_time(date):
     time_url = TIME_URL % date
@@ -237,6 +317,38 @@ def get_time(date):
     time = data.get("available_times")[-1]
     print(f"Got time successfully! {date} {time}")
     return time
+
+
+def get_time_with_retry(date, max_retries=2):
+    """
+    Get available time with automatic session retry on failure.
+    Detects session expiration and attempts re-login automatically.
+    """
+    for attempt in range(max_retries):
+        try:
+            time_url = TIME_URL % date
+            session = driver.get_cookie("_yatri_session")["value"]
+            script = JS_SCRIPT % (str(time_url), session)
+            content = driver.execute_script(script)
+
+            # Check if content is empty or invalid
+            if not content or content.strip() == '':
+                raise ValueError("Empty response from API")
+
+            data = json.loads(content)
+            time = data.get("available_times")[-1]
+            print(f"Got time successfully! {date} {time}")
+            return time
+        except Exception as e:
+            if is_session_expired_error(e) and attempt < max_retries - 1:
+                # Try to re-login
+                if relogin():
+                    continue  # Retry the API call
+                else:
+                    raise  # Re-login failed, propagate error
+            else:
+                # Not a session error or last retry, propagate error
+                raise
 
 
 def is_logged_in():
@@ -292,7 +404,7 @@ if __name__ == "__main__":
             msg = "-" * 60 + f"\nRequest count: {Req_count}, Log time: {datetime.today()}\n"
             print(msg)
             info_logger(LOG_FILE_NAME, msg)
-            dates = get_date()
+            dates = get_date_with_retry()
             if not dates:
                 # Ban Situation
                 msg = f"List is empty, Probabely banned!\n\tSleep for {BAN_COOLDOWN_TIME} hours!\n"
@@ -348,9 +460,10 @@ if __name__ == "__main__":
             END_MSG_TITLE = "EXCEPTION"
             break
 
-print(msg)
-info_logger(LOG_FILE_NAME, msg)
-send_notification(END_MSG_TITLE, msg)
-driver.get(SIGN_OUT_LINK)
-driver.stop_client()
-driver.quit()
+    # Cleanup after loop ends
+    print(msg)
+    info_logger(LOG_FILE_NAME, msg)
+    send_notification(END_MSG_TITLE, msg)
+    driver.get(SIGN_OUT_LINK)
+    driver.stop_client()
+    driver.quit()
