@@ -73,9 +73,11 @@ us_visa_scheduler/
 ├── .gitignore             # Git ignore rules
 ├── pyvenv.cfg             # Virtual environment config
 ├── venv/                  # Python virtual environment
+├── logs/                  # Log files directory
+│   ├── .gitkeep           # Keeps directory in git
+│   └── log_*.txt          # Daily log files (gitignored)
 ├── docs/                  # Documentation folder
 │   └── README.md          # This file
-└── log_*.txt              # Daily log files (gitignored)
 ```
 
 ---
@@ -149,6 +151,8 @@ HUB_ADDRESS = http://localhost:9515    # Selenium Grid URL (if LOCAL_USE=False)
 ```ini
 SENDGRID_API_KEY =                     # SendGrid API key (optional)
 SENDGRID_EMAIL_SENDER =                # Verified sender email (optional)
+TELEGRAM_BOT_TOKEN =                   # Telegram bot token (optional)
+TELEGRAM_CHAT_ID =                     # Telegram chat ID (optional)
 ```
 
 #### [TIME]
@@ -440,6 +444,23 @@ PRIOD_END = 2026-06-01
    SENDGRID_EMAIL_SENDER = verified@yourdomain.com
    ```
 
+#### Telegram Bot Notifications
+1. Open Telegram and talk to [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` command and follow instructions to create your bot
+3. Copy the bot token provided by BotFather
+4. Get your chat ID:
+   - Method 1: Talk to [@userinfobot](https://t.me/userinfobot) - it will show your chat ID
+   - Method 2: Send a message to your bot, then visit:
+     ```
+     https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+     ```
+     Look for `"chat":{"id":123456789}` in the response
+5. Add to config.ini:
+   ```ini
+   TELEGRAM_BOT_TOKEN = 123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   TELEGRAM_CHAT_ID = 123456789
+   ```
+
 #### Timing Customization
 ```ini
 RETRY_TIME = 60              # Check every 60 seconds
@@ -607,7 +628,7 @@ python3 visa.py
 #### Gitignored Files
 ```gitignore
 config.ini          # Contains credentials
-log_*.txt           # May contain personal info
+logs/*.txt          # Log files may contain personal info
 __pycache__/        # Python cache
 venv/               # Virtual environment
 ```
@@ -617,6 +638,7 @@ venv/               # Virtual environment
 - **PASSWORD**: Plain text password (consider encryption)
 - **SCHEDULE_ID**: Personal appointment identifier
 - **SENDGRID_API_KEY**: Email service credentials
+- **TELEGRAM_BOT_TOKEN**: Telegram bot authentication token
 
 ### Security Recommendations
 1. **Never commit config.ini** to version control
@@ -632,7 +654,7 @@ venv/               # Virtual environment
 
 ### Log File Structure
 
-**Location**: `./log_YYYY-MM-DD.txt`
+**Location**: `./logs/log_YYYY-MM-DD.txt`
 
 **Format**:
 ```
@@ -749,7 +771,7 @@ RETRY_TIME = 60  # Seconds between date checks
 2. **Proxy Rotation**: Avoid IP-based rate limiting
 3. **Headless Mode**: Run without visible browser window
 4. **Database Integration**: Track historical appointment availability
-5. **Advanced Notifications**: SMS, Telegram, Slack integrations
+5. **Additional Notifications**: SMS, Slack, Discord integrations
 6. **Retry Logic**: Attempt reschedule multiple times on failure
 7. **Configuration Validation**: Verify config.ini on startup
 8. **Encrypted Credentials**: Secure password storage
@@ -819,7 +841,7 @@ pip install --upgrade webdriver-manager
 
 ### Generated Files
 - **Virtual Environment**: `./venv/`
-- **Daily Logs**: `./log_YYYY-MM-DD.txt`
+- **Daily Logs**: `./logs/log_YYYY-MM-DD.txt`
 - **Python Cache**: `./__pycache__/`
 
 ---

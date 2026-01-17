@@ -5,7 +5,8 @@ The visa_rescheduler is a bot for US VISA (usvisa-info.com) appointment reschedu
 ## Prerequisites
 
 - Having a US VISA appointment scheduled already.
-- [Optional] API token from Sendgrid (for notifications)
+- [Optional] API token from Sendgrid (for email notifications)
+- [Optional] Telegram Bot token and Chat ID (for Telegram notifications)
 
 ## Installation
 
@@ -42,8 +43,15 @@ HUB_ADDRESS = http://localhost:9515/wd/hub
 
 [NOTIFICATION]
 ; Get email notifications via https://sendgrid.com/ (optional)
-SENDGRID_API_KEY = 
+SENDGRID_API_KEY =
 SENDGRID_EMAIL_SENDER =
+
+; Get Telegram notifications via Telegram Bot (optional)
+; To setup: 1) Talk to @BotFather on Telegram to create a bot and get token
+;           2) Talk to @userinfobot to get your chat ID, or message your bot
+;              and visit https://api.telegram.org/bot<TOKEN>/getUpdates
+TELEGRAM_BOT_TOKEN =
+TELEGRAM_CHAT_ID =
 
 [TIME]
 ; Time between retries/checks for available dates (seconds)

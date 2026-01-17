@@ -19,8 +19,14 @@ HUB_ADDRESS = http://localhost:9515/wd/hub
 
 [NOTIFICATION]
 ; Get email notifications via https://sendgrid.com/ (optional)
-SENDGRID_API_KEY = 
-SENDGRID_EMAIL_SENDER = 
+SENDGRID_API_KEY =
+SENDGRID_EMAIL_SENDER =
+
+; Get Telegram notifications via Telegram Bot (optional)
+; To get your bot token: Talk to @BotFather on Telegram and create a new bot
+; To get your chat ID: Talk to @userinfobot on Telegram or send a message to your bot and check https://api.telegram.org/bot<YourBOTToken>/getUpdates
+TELEGRAM_BOT_TOKEN =
+TELEGRAM_CHAT_ID =
 
 [TIME]
 ; Time between retries/checks for available dates (seconds)

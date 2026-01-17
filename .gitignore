@@ -4,5 +4,5 @@ include
 lib
 __pycache__
 /venv
-
-.gitignore
+log_*.txt
+logs/*.txt

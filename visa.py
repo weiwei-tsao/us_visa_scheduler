@@ -2,6 +2,7 @@ import time
 import json
 import requests
 import configparser
+import os
 from datetime import datetime
 
 from selenium import webdriver
@@ -41,7 +42,9 @@ REGEX_CONTINUE = Embassies[YOUR_EMBASSY][2]
 SENDGRID_API_KEY = config['NOTIFICATION']['SENDGRID_API_KEY']
 SENDGRID_EMAIL_SENDER = config['NOTIFICATION']['SENDGRID_EMAIL_SENDER']
 
-# Get push notifications via PERSONAL WEBSITE http://yoursite.com (Optional)
+# Get push notifications via Telegram Bot (Optional)
+TELEGRAM_BOT_TOKEN = config['NOTIFICATION'].get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = config['NOTIFICATION'].get('TELEGRAM_CHAT_ID', '')
 
 # Time Section:
 minute = 60
@@ -88,16 +91,34 @@ else:
 
 def send_notification(title, msg):
     print(f"Sending notification!")
+
+    # Send email via SendGrid
     if SENDGRID_API_KEY:
         message = Mail(from_email=SENDGRID_EMAIL_SENDER, to_emails=USERNAME, subject=title, html_content=msg)
         try:
             sg = SendGridAPIClient(SENDGRID_API_KEY)
             response = sg.send(message)
-            print(response.status_code)
-            print(response.body)
-            print(response.headers)
+            print(f"Email sent - Status: {response.status_code}")
         except Exception as e:
-            print(str(e))
+            print(f"SendGrid error: {str(e)}")
+
+    # Send message via Telegram
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        telegram_message = f"*{title}*\n\n{msg}"
+        telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        telegram_data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": telegram_message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            response = requests.post(telegram_url, data=telegram_data)
+            if response.status_code == 200:
+                print("Telegram message sent successfully")
+            else:
+                print(f"Telegram error: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"Telegram error: {str(e)}")
 
 
 
@@ -218,8 +239,10 @@ def info_logger(file_path, log):
 
 if __name__ == "__main__":
     first_loop = True
+    # Ensure logs directory exists
+    os.makedirs("logs", exist_ok=True)
     while 1:
-        LOG_FILE_NAME = "log_" + str(datetime.now().date()) + ".txt"
+        LOG_FILE_NAME = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
         if first_loop:
             t0 = time.time()
             total_time = 0
