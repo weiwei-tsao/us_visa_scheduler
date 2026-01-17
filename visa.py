@@ -170,20 +170,47 @@ def start_process():
 def reschedule(date):
     appointment_time = get_time(date)
     driver.get(APPOINTMENT_URL)
+
+    # Wait for page to load
+    time.sleep(STEP_TIME)
+    Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "authenticity_token")))
+
     headers = {
         "User-Agent": driver.execute_script("return navigator.userAgent;"),
         "Referer": APPOINTMENT_URL,
         "Cookie": "_yatri_session=" + driver.get_cookie("_yatri_session")["value"]
     }
+
+    # Build data dictionary with required fields
     data = {
-        "utf8": driver.find_element(by=By.NAME, value='utf8').get_attribute('value'),
-        "authenticity_token": driver.find_element(by=By.NAME, value='authenticity_token').get_attribute('value'),
-        "confirmed_limit_message": driver.find_element(by=By.NAME, value='confirmed_limit_message').get_attribute('value'),
-        "use_consulate_appointment_capacity": driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value'),
         "appointments[consulate_appointment][facility_id]": FACILITY_ID,
         "appointments[consulate_appointment][date]": date,
         "appointments[consulate_appointment][time]": appointment_time,
     }
+
+    # Add authenticity token (required)
+    try:
+        data["authenticity_token"] = driver.find_element(by=By.NAME, value='authenticity_token').get_attribute('value')
+    except Exception as e:
+        print(f"Warning: Could not find authenticity_token: {e}")
+        return ["FAIL", f"Could not find authenticity token on reschedule page"]
+
+    # Add optional fields (may or may not be present depending on Rails version)
+    try:
+        data["utf8"] = driver.find_element(by=By.NAME, value='utf8').get_attribute('value')
+    except:
+        pass  # utf8 field not present (Rails 6+), continue without it
+
+    try:
+        data["confirmed_limit_message"] = driver.find_element(by=By.NAME, value='confirmed_limit_message').get_attribute('value')
+    except:
+        pass  # confirmed_limit_message not present, continue without it
+
+    try:
+        data["use_consulate_appointment_capacity"] = driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value')
+    except:
+        pass  # use_consulate_appointment_capacity not present, continue without it
+
     r = requests.post(APPOINTMENT_URL, headers=headers, data=data)
     if(r.text.find('Successfully Scheduled') != -1):
         title = "SUCCESS"
