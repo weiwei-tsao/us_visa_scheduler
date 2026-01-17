@@ -6,3 +6,4 @@ __pycache__
 /venv
 log_*.txt
 logs/*.txt
+logs/*.log
