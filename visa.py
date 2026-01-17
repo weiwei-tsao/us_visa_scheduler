@@ -104,12 +104,18 @@ def send_notification(title, msg):
 
     # Send message via Telegram
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        telegram_message = f"*{title}*\n\n{msg}"
+        # Escape special characters for Markdown V2
+        def escape_markdown(text):
+            # Characters that need to be escaped in Markdown
+            escape_chars = r'_*[]()~`>#+-=|{}.!'
+            return ''.join('\\' + char if char in escape_chars else char for char in str(text))
+
+        telegram_message = f"*{escape_markdown(title)}*\n\n{escape_markdown(msg)}"
         telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         telegram_data = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": telegram_message,
-            "parse_mode": "Markdown"
+            "parse_mode": "MarkdownV2"
         }
         try:
             response = requests.post(telegram_url, data=telegram_data)
@@ -244,6 +250,12 @@ if __name__ == "__main__":
     while 1:
         LOG_FILE_NAME = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
         if first_loop:
+            # Add session divider to log file
+            session_divider = "\n" + "=" * 80 + "\n"
+            session_divider += f"NEW SESSION STARTED: {datetime.now()}\n"
+            session_divider += "=" * 80 + "\n"
+            info_logger(LOG_FILE_NAME, session_divider)
+
             t0 = time.time()
             total_time = 0
             Req_count = 0
@@ -263,6 +275,11 @@ if __name__ == "__main__":
                 send_notification("BAN", msg)
                 driver.get(SIGN_OUT_LINK)
                 time.sleep(BAN_COOLDOWN_TIME * hour)
+                # Log session restart after ban
+                restart_msg = "\n" + "=" * 80 + "\n"
+                restart_msg += f"RESTARTING AFTER BAN COOLDOWN: {datetime.now()}\n"
+                restart_msg += "=" * 80 + "\n"
+                info_logger(LOG_FILE_NAME, restart_msg)
                 first_loop = True
             else:
                 # Print Available dates:
@@ -288,6 +305,11 @@ if __name__ == "__main__":
                     send_notification("REST", f"Break-time after {WORK_LIMIT_TIME} hours | Repeated {Req_count} times")
                     driver.get(SIGN_OUT_LINK)
                     time.sleep(WORK_COOLDOWN_TIME * hour)
+                    # Log session restart after work cooldown
+                    restart_msg = "\n" + "=" * 80 + "\n"
+                    restart_msg += f"RESTARTING AFTER WORK COOLDOWN: {datetime.now()}\n"
+                    restart_msg += "=" * 80 + "\n"
+                    info_logger(LOG_FILE_NAME, restart_msg)
                     first_loop = True
                 else:
                     msg = "Retry Wait Time: "+ str(RETRY_WAIT_TIME)+ " seconds"
