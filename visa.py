@@ -77,7 +77,12 @@ JS_SCRIPT = ("var req = new XMLHttpRequest();"
              "return req.responseText;")
 
 if LOCAL_USE:
-    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+    try:
+        driver = webdriver.Chrome()
+    except Exception as e:
+        print(f"Failed to initialize Chrome with default driver: {e}")
+        print("Trying with webdriver-manager...")
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
 else:
     driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=webdriver.ChromeOptions())
 
@@ -92,32 +97,32 @@ def send_notification(title, msg):
             print(response.body)
             print(response.headers)
         except Exception as e:
-            print(e.message)
+            print(str(e))
 
 
 
 def auto_action(label, find_by, el_type, action, value, sleep_time=0):
     print("\t"+ label +":", end="")
     # Find Element By
-    match find_by.lower():
-        case 'id':
-            item = driver.find_element(By.ID, el_type)
-        case 'name':
-            item = driver.find_element(By.NAME, el_type)
-        case 'class':
-            item = driver.find_element(By.CLASS_NAME, el_type)
-        case 'xpath':
-            item = driver.find_element(By.XPATH, el_type)
-        case _:
-            return 0
+    find_by_lower = find_by.lower()
+    if find_by_lower == 'id':
+        item = driver.find_element(By.ID, el_type)
+    elif find_by_lower == 'name':
+        item = driver.find_element(By.NAME, el_type)
+    elif find_by_lower == 'class':
+        item = driver.find_element(By.CLASS_NAME, el_type)
+    elif find_by_lower == 'xpath':
+        item = driver.find_element(By.XPATH, el_type)
+    else:
+        return 0
     # Do Action:
-    match action.lower():
-        case 'send':
-            item.send_keys(value)
-        case 'click':
-            item.click()
-        case _:
-            return 0
+    action_lower = action.lower()
+    if action_lower == 'send':
+        item.send_keys(value)
+    elif action_lower == 'click':
+        item.click()
+    else:
+        return 0
     print("\t\tCheck!")
     if sleep_time:
         time.sleep(sleep_time)
@@ -137,7 +142,7 @@ def start_process():
     print("\n\tlogin successful!\n")
 
 def reschedule(date):
-    time = get_time(date)
+    appointment_time = get_time(date)
     driver.get(APPOINTMENT_URL)
     headers = {
         "User-Agent": driver.execute_script("return navigator.userAgent;"),
@@ -151,15 +156,15 @@ def reschedule(date):
         "use_consulate_appointment_capacity": driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value'),
         "appointments[consulate_appointment][facility_id]": FACILITY_ID,
         "appointments[consulate_appointment][date]": date,
-        "appointments[consulate_appointment][time]": time,
+        "appointments[consulate_appointment][time]": appointment_time,
     }
     r = requests.post(APPOINTMENT_URL, headers=headers, data=data)
     if(r.text.find('Successfully Scheduled') != -1):
         title = "SUCCESS"
-        msg = f"Rescheduled Successfully! {date} {time}"
+        msg = f"Rescheduled Successfully! {date} {appointment_time}"
     else:
         title = "FAIL"
-        msg = f"Reschedule Failed!!! {date} {time}"
+        msg = f"Reschedule Failed!!! {date} {appointment_time}"
     return [title, msg]
 
 
@@ -238,10 +243,9 @@ if __name__ == "__main__":
                 first_loop = True
             else:
                 # Print Available dates:
-                msg = ""
+                msg = "Available dates:\n"
                 for d in dates:
                     msg = msg + "%s" % (d.get('date')) + ", "
-                msg = "Available dates:\n"+ msg
                 print(msg)
                 info_logger(LOG_FILE_NAME, msg)
                 date = get_available_date(dates)
@@ -267,9 +271,9 @@ if __name__ == "__main__":
                     print(msg)
                     info_logger(LOG_FILE_NAME, msg)
                     time.sleep(RETRY_WAIT_TIME)
-        except:
+        except Exception as e:
             # Exception Occured
-            msg = f"Break the loop after exception!\n"
+            msg = f"Break the loop after exception!\nError: {str(e)}\n"
             END_MSG_TITLE = "EXCEPTION"
             break
 
