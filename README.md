@@ -107,11 +107,12 @@ pm2 startup
 
 #### PM2 Benefits
 
-- **Auto-restart every 4 hours**: Prevents getting stuck in long sleep periods (5h ban cooldown becomes max 4h)
+- **Relative interval restarts**: Script exits after `WORK_LIMIT_TIME` hours (configured in config.ini), PM2 restarts immediately. This creates relative intervals from script start, not fixed clock times.
 - **Crash recovery**: Automatically restarts if script crashes
 - **Background execution**: No need to keep terminal open
 - **Memory protection**: Restarts if Chrome uses >500MB
 - **Easy monitoring**: Check status with `pm2 status`
+- **No fixed schedule**: Restarts happen relative to when script starts, ensuring continuous coverage even after maintenance or bans
 
 #### Common PM2 Commands
 

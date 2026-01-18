@@ -439,16 +439,14 @@ if __name__ == "__main__":
                 print(msg)
                 info_logger(LOG_FILE_NAME, msg)
                 if total_time > WORK_LIMIT_TIME * hour:
-                    # Let program rest a little
-                    send_notification("REST", f"Break-time after {WORK_LIMIT_TIME} hours | Repeated {Req_count} times")
+                    # Exit for PM2 to restart (relative interval)
+                    msg = f"Work limit reached ({WORK_LIMIT_TIME}h), exiting for PM2 restart | Repeated {Req_count} times"
+                    print(msg)
+                    info_logger(LOG_FILE_NAME, msg)
+                    send_notification("PM2 RESTART", msg)
+                    END_MSG_TITLE = "WORK_LIMIT_RESTART"
                     driver.get(SIGN_OUT_LINK)
-                    time.sleep(WORK_COOLDOWN_TIME * hour)
-                    # Log session restart after work cooldown
-                    restart_msg = "\n" + "=" * 80 + "\n"
-                    restart_msg += f"RESTARTING AFTER WORK COOLDOWN: {datetime.now()}\n"
-                    restart_msg += "=" * 80 + "\n"
-                    info_logger(LOG_FILE_NAME, restart_msg)
-                    first_loop = True
+                    break  # Exit script, PM2 will restart immediately
                 else:
                     msg = "Retry Wait Time: "+ str(RETRY_WAIT_TIME)+ " seconds"
                     print(msg)

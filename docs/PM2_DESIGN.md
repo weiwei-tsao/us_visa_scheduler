@@ -76,21 +76,24 @@ The visa scheduler script encounters operational challenges when running unatten
 
 ## Solution Overview
 
-### Chosen Approach: PM2-Only Time-Based Restarts
+### Chosen Approach: PM2-Only Relative Interval Restarts
 
-**Summary**: Use PM2 process manager with periodic cron-based restarts, without code modifications.
+**Summary**: Use PM2 process manager with script-controlled exit after work limit, creating relative restart intervals.
 
 **Key Features**:
-- Automatic restart every 4 hours via cron
+- Script exits after `WORK_LIMIT_TIME` hours (configured in config.ini)
+- PM2 autorestart immediately creates new session (relative interval from script start)
 - Immediate crash recovery via autorestart
 - Memory limit monitoring (500MB threshold)
 - Background daemon execution
 - Built-in log management
 
 **Why This Approach**:
-- **Simplicity**: Single configuration file, no code changes
+- **Relative Intervals**: Restarts happen relative to script start, not fixed clock times
+- **User Control**: Restart interval controlled via `WORK_LIMIT_TIME` constant in config.ini
+- **Continuous Coverage**: No fixed schedule means no gaps during system maintenance or bans
+- **Minimal Code Changes**: Single exit point modification in visa.py
 - **Proven Technology**: PM2 is mature, well-documented, widely used
-- **Acceptable Trade-off**: 4-hour max stuck time vs 5-hour ban sleep
 - **Low Maintenance**: Set-and-forget operation
 
 ---
@@ -111,7 +114,7 @@ The visa scheduler script encounters operational challenges when running unatten
 │           visa-scheduler Process                    │
 │  • Script: visa.py                                  │
 │  • Interpreter: python3                             │
-│  • Cron: 0 */4 * * * (every 4 hours)               │
+│  • Work limit: WORK_LIMIT_TIME (from config.ini)   │
 │  • Memory limit: 500MB                              │
 │  • Autorestart: true                                │
 └──────────────────┬──────────────────────────────────┘
@@ -138,11 +141,11 @@ visa.py opens Chrome and starts monitoring
 │  (polling, sleeping, rescheduling)      │
 └─────────────────┬───────────────────────┘
                   │
-                  │ Every 4 hours (cron)
+                  │ After WORK_LIMIT_TIME hours
                   │ OR on crash
                   │ OR on memory limit
                   ▼
-PM2 kills visa.py process
+Script exits gracefully (or PM2 detects crash)
       ↓
 PM2 immediately spawns new visa.py
       ↓
@@ -155,7 +158,7 @@ Monitoring resumes
 
 | Trigger | Detection Method | Response Time | Type |
 |---------|------------------|---------------|------|
-| **Scheduled** | Cron: `0 */4 * * *` | Every 4 hours | Proactive |
+| **Work Limit** | Script exits after `WORK_LIMIT_TIME` hours | Immediate (relative interval) | Proactive |
 | **Crash** | Process exit detected | <5 seconds | Reactive |
 | **Memory limit** | Memory usage >500MB | Immediate | Proactive |
 | **Manual** | User command: `pm2 restart` | Immediate | Manual |
@@ -164,53 +167,57 @@ Monitoring resumes
 
 ## Design Decisions
 
-### Decision 1: Restart Interval - 4 Hours
+### Decision 1: Restart Interval - Relative via WORK_LIMIT_TIME
 
 **Options Considered**:
-- 2 hours (aggressive)
-- 4 hours (balanced)
-- 8 hours (conservative)
+- Fixed-time cron restarts (12am, 4am, 8am, etc.)
+- Relative interval via script exit after work limit
+- Heartbeat monitoring with intelligent restarts
 - No periodic restart
 
-**Chosen**: 4 hours
+**Chosen**: Relative interval via script exit
 
 **Rationale**:
-- Ban cooldown is 5 hours → 4-hour restart ensures max wait of 4 hours (not 5)
-- Long enough to allow productive work sessions
-- Aligns with natural work periods (morning, afternoon, evening, night)
-- Restarts at predictable times: 12am, 4am, 8am, 12pm, 4pm, 8pm
-- Script's session recovery handles restarts gracefully
+- **Relative timing**: Restarts happen relative to script start, not fixed clock times
+- **User-controlled**: Interval set via `WORK_LIMIT_TIME` constant in config.ini (default: 1.5 hours)
+- **Continuous coverage**: No gaps from fixed schedules during system maintenance or bans
+- **Minimal code change**: Single modification to work limit handling (exit instead of sleep)
+- **Existing infrastructure**: Leverages existing `WORK_LIMIT_TIME` mechanism already in codebase
+- **Script's session recovery**: `first_loop` flag ensures automatic re-login after PM2 restart
 
-**Trade-off**: May interrupt legitimate operations, but script re-logs in automatically
+**Trade-off**: Requires minimal code modification (one exit point), but provides better coverage than fixed times
 
 ---
 
-### Decision 2: PM2-Only (No State Monitoring)
+### Decision 2: PM2-Only with Script Exit (No State Monitoring)
 
 **Options Considered**:
-1. **PM2 only** (time-based restarts)
-2. **PM2 + Heartbeat monitoring** (state-aware restarts)
-3. **PM2 + Manual override flag file** (user-triggered graceful restart)
-4. **All three layers** (maximum robustness)
+1. **PM2 only with cron** (fixed-time restarts)
+2. **PM2 + script exit after work limit** (relative interval restarts)
+3. **PM2 + Heartbeat monitoring** (state-aware restarts)
+4. **PM2 + Manual override flag file** (user-triggered graceful restart)
+5. **All three layers** (maximum robustness)
 
-**Chosen**: PM2 only
+**Chosen**: PM2 + script exit after work limit (Option 2)
 
 **Rationale**:
-- **Simplicity**: Zero code changes, single config file
-- **Sufficient**: 4-hour window acceptable given user's use case
-- **Maintainable**: No additional processes to manage
-- **Reliable**: Time-based restarts are predictable and guaranteed
-- **User preference**: User explicitly chose simple solution over complex monitoring
+- **Relative intervals**: Restarts are relative to script start, ensuring continuous coverage
+- **Minimal complexity**: Single code modification (exit point), no additional processes
+- **Maintainable**: Uses existing `WORK_LIMIT_TIME` constant, no new configuration
+- **Reliable**: Work limit exit is predictable and guaranteed
+- **User preference**: User chose relative intervals over fixed times after understanding trade-offs
 
 **What We Gave Up**:
+- Zero code changes (made minimal change to exit instead of sleep after work limit)
 - State-aware restart decisions (can't distinguish sleep from hang)
 - Manual graceful restart via flag file
 - Heartbeat logging for debugging
 
 **Why It's Acceptable**:
 - Script already has robust session recovery (`first_loop` flag)
-- 4-hour forced restart is short enough for user's needs
-- User confirmed ban sleep is only failure mode they encounter
+- Single code change is minimal and uses existing mechanism
+- Relative intervals provide better coverage than fixed cron times
+- User confirmed this approach meets their needs for handling bans and maintenance windows
 
 ---
 
@@ -375,9 +382,9 @@ User then checks `pm2 logs visa-scheduler --err` to diagnose root cause.
 
 ```
 us_visa_scheduler/
-├── ecosystem.config.js    # PM2 configuration (NEW)
+├── ecosystem.config.js    # PM2 configuration (NEW - no cron_restart)
 ├── status.sh              # Quick status script (NEW)
-├── visa.py                # Main script (UNCHANGED)
+├── visa.py                # Main script (MODIFIED - work limit exit)
 ├── config.ini             # User config (UNCHANGED)
 ├── logs/
 │   ├── pm2-out.log       # PM2 stdout (NEW)
@@ -397,9 +404,10 @@ module.exports = {
       interpreter: 'python3',
 
       // Restart policies
-      cron_restart: '0 */4 * * *',  // Every 4h at minute 0
+      // Restart interval controlled by WORK_LIMIT_TIME in config.ini (not cron)
+      // Script exits after work limit, PM2 autorestart creates relative intervals
       max_memory_restart: '500M',    // Memory threshold
-      autorestart: true,             // Restart on crash
+      autorestart: true,             // Restart on crash or normal exit
 
       // Crash protection
       max_restarts: 10,              // Max restarts in min_uptime
@@ -414,26 +422,30 @@ module.exports = {
 };
 ```
 
-### Cron Syntax Explanation
+### Relative Interval Mechanism
 
-`'0 */4 * * *'` = "At minute 0 of every 4th hour"
+**How It Works**:
+1. Script tracks total runtime using `time.time()`
+2. After `WORK_LIMIT_TIME` hours, script exits gracefully (not sleeps)
+3. PM2 `autorestart: true` immediately spawns new process
+4. New process re-logs in via `first_loop` flag
+5. Cycle repeats, creating relative intervals from start time
 
-**Breakdown**:
-- `0` - Minute (0 = top of the hour)
-- `*/4` - Every 4th hour
-- `*` - Every day of month
-- `*` - Every month
-- `*` - Every day of week
+**Example Timeline** (WORK_LIMIT_TIME = 1.5 hours):
+```
+10:00 AM - Script starts (PM2 spawn)
+11:30 AM - Work limit reached, script exits
+11:30 AM - PM2 detects exit, immediately restarts
+11:30 AM - New session starts
+01:00 PM - Work limit reached, script exits
+01:00 PM - PM2 restarts again
+... (relative 1.5h intervals continue)
+```
 
-**Restart Times**:
-- 00:00 (midnight)
-- 04:00 (4am)
-- 08:00 (8am)
-- 12:00 (noon)
-- 16:00 (4pm)
-- 20:00 (8pm)
-
-**Why minute 0**: Consistent, predictable restart times. Easy to correlate with logs.
+**Key Benefits**:
+- **No fixed schedule**: Restarts adapt to when script actually started
+- **Continuous coverage**: If script fails at 3:17 AM, restarts happen at 4:47 AM, 6:17 AM, etc. (not waiting for next fixed time)
+- **User-controlled**: Change `WORK_LIMIT_TIME` in config.ini to adjust interval (e.g., 2.0 hours, 0.5 hours)
 
 ---
 
@@ -488,30 +500,35 @@ restarts: 3
 
 | Benefit | Impact |
 |---------|--------|
-| **Max stuck time: 4h** | Down from 5h ban sleep |
-| **Zero code changes** | No risk to working script |
+| **Relative restart intervals** | Restarts adapt to script start time, ensuring continuous coverage |
+| **User-controlled interval** | Change `WORK_LIMIT_TIME` in config.ini (currently 1.5h) |
+| **No fixed schedule gaps** | Continuous monitoring even after failures or maintenance |
 | **Background execution** | No terminal dependency |
 | **Crash recovery** | <5 second restart |
 | **Memory protection** | Prevents leaks |
 | **Simple monitoring** | `pm2 status` command |
 | **Cross-platform** | Works on macOS/Linux/Windows |
+| **Minimal code change** | Single exit point modification (8 lines) |
 
 ### What We Gave Up
 
 | Trade-off | Impact | Mitigation |
 |-----------|--------|------------|
 | **May interrupt operations** | Restart during active reschedule | Script re-logs in and retries |
-| **Time-based (not state-aware)** | Can't distinguish sleep from hang | 4h window acceptable per user |
+| **Time-based (not state-aware)** | Can't distinguish sleep from hang | Relative intervals better than fixed cron |
+| **Zero code changes** | Modified work limit handling to exit | Minimal change using existing mechanism |
 | **Node.js dependency** | Additional software required | One-time install |
 | **Less intelligent** | No state logging | PM2 logs + app logs sufficient |
 
 ### Why Trade-offs Are Acceptable
 
 1. **Script has robust recovery**: `first_loop` flag + automatic re-login
-2. **4h window meets user needs**: Better than 5h ban sleep
-3. **Operations are idempotent**: Interrupted reschedule just retries
-4. **Node.js widely available**: Managed via Homebrew on macOS
-5. **Logs provide sufficient debugging**: Combined PM2 + app logs
+2. **Relative intervals better than fixed**: No gaps from fixed schedule, continuous coverage
+3. **Minimal code change**: Single modification using existing `WORK_LIMIT_TIME` mechanism
+4. **Operations are idempotent**: Interrupted reschedule just retries
+5. **Node.js widely available**: Managed via Homebrew on macOS
+6. **Logs provide sufficient debugging**: Combined PM2 + app logs
+7. **User-controlled interval**: Can adjust `WORK_LIMIT_TIME` in config.ini without code changes
 
 ---
 
@@ -608,12 +625,12 @@ restarts: 3
 **Memory Limit Hit Frequently**:
 - Increase threshold: `max_memory_restart: '750M'`
 - Check for Chrome leaks: `ps aux | grep chrome`
-- Reduce work time: `WORK_LIMIT_TIME = 1.0`
+- Reduce work time: `WORK_LIMIT_TIME = 1.0` in config.ini
 
-**Cron Not Triggering**:
-- Verify PM2 version: `pm2 --version` (need 5.0+)
-- Check cron syntax: `pm2 show visa-scheduler | grep cron`
-- Test with short interval: `'*/5 * * * *'` (every 5 min)
+**Restart Interval Too Long/Short**:
+- Adjust in config.ini: `WORK_LIMIT_TIME = 2.0` (increase to 2 hours)
+- Or decrease: `WORK_LIMIT_TIME = 0.5` (30 minutes)
+- Restart PM2: `pm2 restart visa-scheduler` for changes to take effect
 
 ---
 
@@ -621,11 +638,12 @@ restarts: 3
 
 ### Success Indicators
 
-- Restart count: 6-8 per day (every 4h = 6/day)
+- Restart count: Varies based on `WORK_LIMIT_TIME` (default 1.5h = ~16/day)
 - Memory usage: 200-400MB steady state
 - Chrome processes: 8-12 per instance
 - Uptime: >60s between restarts
 - Status: "online" in `pm2 status`
+- Restart intervals: Consistent relative to start time (not fixed clock times)
 
 ### Warning Signs
 
@@ -662,34 +680,37 @@ python3 visa.py
 
 ### Design Summary
 
-The PM2-only solution provides a **simple, reliable, and maintainable** monitoring system that solves the core problem (stuck in long sleeps) with minimal complexity and zero code changes.
+The PM2 + script exit solution provides a **simple, reliable, and maintainable** monitoring system that solves the core problem (stuck in long sleeps) with minimal complexity and relative restart intervals.
 
 **Key Design Principles Applied**:
-1. **Simplicity over intelligence**: Time-based restarts sufficient
-2. **Infrastructure over code**: Process manager handles lifecycle
-3. **Proven tools**: PM2 is battle-tested
-4. **Graceful degradation**: Script recovers from any restart
-5. **User preferences**: No code changes, low maintenance
+1. **Relative intervals over fixed times**: Ensures continuous coverage regardless of when script starts
+2. **Minimal code changes**: Single exit point modification using existing mechanism
+3. **User control**: Restart interval configurable via `WORK_LIMIT_TIME` in config.ini
+4. **Infrastructure over code**: Process manager handles lifecycle
+5. **Proven tools**: PM2 is battle-tested
+6. **Graceful degradation**: Script recovers from any restart
 
 ### Success Criteria Met
 
-- ✅ Max stuck time: 4h (down from 5h)
-- ✅ Zero code changes to visa.py
+- ✅ Relative restart intervals (no fixed schedule gaps)
+- ✅ User-controlled via `WORK_LIMIT_TIME` constant (currently 1.5h)
+- ✅ Minimal code changes (single exit point, 8 lines modified)
 - ✅ Background execution without terminal
 - ✅ Automatic crash recovery
 - ✅ Simple monitoring and control
 - ✅ Memory leak protection
 - ✅ Low maintenance overhead
+- ✅ Continuous coverage during maintenance or ban periods
 
 ### When to Revisit
 
 Consider adding heartbeat monitoring if:
-- 4-hour restarts too frequent (>6/day seems excessive)
-- Users want smarter restart logic
+- Relative interval restarts prove insufficient
+- Users want smarter restart logic (state-aware decisions)
 - Debugging requires state history
 - False restart interruptions become problematic
 
-For now, this PM2-only solution is the **right-sized** solution for the problem at hand.
+For now, this PM2 + relative interval solution is the **right-sized** solution for the problem at hand, balancing simplicity with effectiveness.
 
 ---
 
