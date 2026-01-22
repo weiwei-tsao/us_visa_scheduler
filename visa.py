@@ -3,11 +3,14 @@ import json
 import requests
 import configparser
 import os
+import sys
+import random
 from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import WebDriverException
 
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait as Wait
@@ -18,51 +21,45 @@ from sendgrid.helpers.mail import Mail
 
 from embassy import *
 
+# Exit Codes
+EXIT_WORK_LIMIT = 0
+EXIT_BAN = 2
+EXIT_NETWORK = 3
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 
 # Personal Info:
-# Account and current appointment info from https://ais.usvisa-info.com
 USERNAME = config['PERSONAL_INFO']['USERNAME']
 PASSWORD = config['PERSONAL_INFO']['PASSWORD']
-# Find SCHEDULE_ID in re-schedule page link:
-# https://ais.usvisa-info.com/en-am/niv/schedule/{SCHEDULE_ID}/appointment
 SCHEDULE_ID = config['PERSONAL_INFO']['SCHEDULE_ID']
-# Target Period:
 PRIOD_START = config['PERSONAL_INFO']['PRIOD_START']
 PRIOD_END = config['PERSONAL_INFO']['PRIOD_END']
-# Embassy Section:
 YOUR_EMBASSY = config['PERSONAL_INFO']['YOUR_EMBASSY'] 
 EMBASSY = Embassies[YOUR_EMBASSY][0]
 FACILITY_ID = Embassies[YOUR_EMBASSY][1]
 REGEX_CONTINUE = Embassies[YOUR_EMBASSY][2]
 
 # Notification:
-# Get email notifications via https://sendgrid.com/ (Optional)
 SENDGRID_API_KEY = config['NOTIFICATION']['SENDGRID_API_KEY']
 SENDGRID_EMAIL_SENDER = config['NOTIFICATION']['SENDGRID_EMAIL_SENDER']
-
-# Get push notifications via Telegram Bot (Optional)
 TELEGRAM_BOT_TOKEN = config['NOTIFICATION'].get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = config['NOTIFICATION'].get('TELEGRAM_CHAT_ID', '')
 
 # Time Section:
 minute = 60
 hour = 60 * minute
-# Time between steps (interactions with forms)
 STEP_TIME = 0.5
-# Time between retries/checks for available dates (seconds)
-RETRY_TIME = config['TIME'].getfloat('RETRY_TIME')
-# Cooling down after WORK_LIMIT_TIME hours of work (Avoiding Ban)
+
+# Randomized Retry Logic
+RETRY_TIME_L_BOUND = config['TIME'].getfloat('RETRY_TIME_L_BOUND')
+RETRY_TIME_U_BOUND = config['TIME'].getfloat('RETRY_TIME_U_BOUND')
+
+# Work Limits
 WORK_LIMIT_TIME = config['TIME'].getfloat('WORK_LIMIT_TIME')
-WORK_COOLDOWN_TIME = config['TIME'].getfloat('WORK_COOLDOWN_TIME')
-# Temporary Banned (empty list): wait COOLDOWN_TIME hours
-BAN_COOLDOWN_TIME = config['TIME'].getfloat('BAN_COOLDOWN_TIME')
 
 # CHROMEDRIVER
-# Details for the script to control Chrome
 LOCAL_USE = config['CHROMEDRIVER'].getboolean('LOCAL_USE')
-# Optional: HUB_ADDRESS is mandatory only when LOCAL_USE = False
 HUB_ADDRESS = config['CHROMEDRIVER']['HUB_ADDRESS']
 
 SIGN_IN_LINK = f"https://ais.usvisa-info.com/{EMBASSY}/niv/users/sign_in"
@@ -79,20 +76,22 @@ JS_SCRIPT = ("var req = new XMLHttpRequest();"
              "req.send(null);"
              "return req.responseText;")
 
-if LOCAL_USE:
-    try:
-        driver = webdriver.Chrome()
-    except Exception as e:
-        print(f"Failed to initialize Chrome with default driver: {e}")
-        print("Trying with webdriver-manager...")
-        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
-else:
-    driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=webdriver.ChromeOptions())
+driver = None
+
+def init_driver():
+    global driver
+    if LOCAL_USE:
+        try:
+            driver = webdriver.Chrome()
+        except Exception as e:
+            print(f"Failed to initialize Chrome with default driver: {e}")
+            print("Trying with webdriver-manager...")
+            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+    else:
+        driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=webdriver.ChromeOptions())
 
 def send_notification(title, msg):
     print(f"Sending notification!")
-
-    # Send email via SendGrid
     if SENDGRID_API_KEY:
         message = Mail(from_email=SENDGRID_EMAIL_SENDER, to_emails=USERNAME, subject=title, html_content=msg)
         try:
@@ -102,13 +101,9 @@ def send_notification(title, msg):
         except Exception as e:
             print(f"SendGrid error: {str(e)}")
 
-    # Send message via Telegram
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        # Use HTML formatting for better readability
         def escape_html(text):
-            # Escape HTML special characters
             return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
         telegram_message = f"<b>{escape_html(title)}</b>\n\n{escape_html(msg)}"
         telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         telegram_data = {
@@ -117,19 +112,12 @@ def send_notification(title, msg):
             "parse_mode": "HTML"
         }
         try:
-            response = requests.post(telegram_url, data=telegram_data)
-            if response.status_code == 200:
-                print("Telegram message sent successfully")
-            else:
-                print(f"Telegram error: {response.status_code} - {response.text}")
+            requests.post(telegram_url, data=telegram_data)
         except Exception as e:
             print(f"Telegram error: {str(e)}")
 
-
-
 def auto_action(label, find_by, el_type, action, value, sleep_time=0):
     print("\t"+ label +":", end="")
-    # Find Element By
     find_by_lower = find_by.lower()
     if find_by_lower == 'id':
         item = driver.find_element(By.ID, el_type)
@@ -141,7 +129,6 @@ def auto_action(label, find_by, el_type, action, value, sleep_time=0):
         item = driver.find_element(By.XPATH, el_type)
     else:
         return 0
-    # Do Action:
     action_lower = action.lower()
     if action_lower == 'send':
         item.send_keys(value)
@@ -153,9 +140,7 @@ def auto_action(label, find_by, el_type, action, value, sleep_time=0):
     if sleep_time:
         time.sleep(sleep_time)
 
-
 def start_process():
-    # Bypass reCAPTCHA
     driver.get(SIGN_IN_LINK)
     time.sleep(STEP_TIME)
     Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "commit")))
@@ -170,201 +155,95 @@ def start_process():
 def reschedule(date):
     appointment_time = get_time_with_retry(date)
     driver.get(APPOINTMENT_URL)
-
-    # Wait for page to load
     time.sleep(STEP_TIME)
     Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "authenticity_token")))
-
+    
     headers = {
         "User-Agent": driver.execute_script("return navigator.userAgent;"),
         "Referer": APPOINTMENT_URL,
         "Cookie": "_yatri_session=" + driver.get_cookie("_yatri_session")["value"]
     }
-
-    # Build data dictionary with required fields
+    
     data = {
         "appointments[consulate_appointment][facility_id]": FACILITY_ID,
         "appointments[consulate_appointment][date]": date,
         "appointments[consulate_appointment][time]": appointment_time,
     }
-
-    # Add authenticity token (required)
     try:
         data["authenticity_token"] = driver.find_element(by=By.NAME, value='authenticity_token').get_attribute('value')
-    except Exception as e:
-        print(f"Warning: Could not find authenticity_token: {e}")
-        return ["FAIL", f"Could not find authenticity token on reschedule page"]
-
-    # Add optional fields (may or may not be present depending on Rails version)
-    try:
-        data["utf8"] = driver.find_element(by=By.NAME, value='utf8').get_attribute('value')
     except:
-        pass  # utf8 field not present (Rails 6+), continue without it
+        return ["FAIL", f"Could not find authenticity token"]
 
-    try:
-        data["confirmed_limit_message"] = driver.find_element(by=By.NAME, value='confirmed_limit_message').get_attribute('value')
-    except:
-        pass  # confirmed_limit_message not present, continue without it
-
-    try:
-        data["use_consulate_appointment_capacity"] = driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value')
-    except:
-        pass  # use_consulate_appointment_capacity not present, continue without it
+    try: data["utf8"] = driver.find_element(by=By.NAME, value='utf8').get_attribute('value')
+    except: pass
+    try: data["confirmed_limit_message"] = driver.find_element(by=By.NAME, value='confirmed_limit_message').get_attribute('value')
+    except: pass
+    try: data["use_consulate_appointment_capacity"] = driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value')
+    except: pass
 
     r = requests.post(APPOINTMENT_URL, headers=headers, data=data)
     if(r.text.find('Successfully Scheduled') != -1):
-        title = "SUCCESS"
-        msg = f"Rescheduled Successfully! {date} {appointment_time}"
+        return ["SUCCESS", f"Rescheduled Successfully! {date} {appointment_time}"]
     else:
-        title = "FAIL"
-        msg = f"Reschedule Failed!!! {date} {appointment_time}"
-    return [title, msg]
-
+        return ["FAIL", f"Reschedule Failed!!! {date} {appointment_time}"]
 
 def is_session_expired_error(error):
-    """
-    Detect if an error is related to session expiration.
-    Common indicators:
-    - JSON decode errors (empty response)
-    - HTTP 401/403 errors
-    - Specific error messages
-    """
     error_str = str(error).lower()
-    session_error_indicators = [
-        'expecting value: line 1 column 1',  # Empty JSON response
-        'json.decoder.jsondecodeerror',
-        'empty response',  # Empty API response
-        '401',  # Unauthorized
-        '403',  # Forbidden
-        'unauthorized',
-        'session',
-        'expired'
-    ]
-    return any(indicator in error_str for indicator in session_error_indicators)
-
+    return any(x in error_str for x in ['expecting value', 'jsondecodeerror', 'empty response', '401', '403', 'unauthorized', 'session', 'expired'])
 
 def relogin():
-    """
-    Re-authenticate when session expires.
-    Returns True if successful, False otherwise.
-    """
     try:
-        print("\n[SESSION] Session expired or invalid. Attempting to re-login...")
-        log_file = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
-        info_logger(log_file, "[SESSION] Session expired. Re-authenticating...")
-
-        # Sign out first to clear old session
+        print("\n[SESSION] Session expired. Re-authenticating...")
         try:
             driver.get(SIGN_OUT_LINK)
             time.sleep(STEP_TIME)
-        except:
-            pass  # Ignore errors if already signed out
-
-        # Re-login
+        except: pass
         start_process()
-        print("[SESSION] Re-login successful!\n")
-        info_logger(log_file, "[SESSION] Re-login successful!")
         return True
     except Exception as e:
         print(f"[SESSION] Re-login failed: {str(e)}")
-        log_file = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
-        info_logger(log_file, f"[SESSION] Re-login failed: {str(e)}")
         return False
 
-
-def get_date():
-    # Requesting to get the whole available dates
-    session = driver.get_cookie("_yatri_session")["value"]
-    script = JS_SCRIPT % (str(DATE_URL), session)
-    content = driver.execute_script(script)
-    return json.loads(content)
-
-
-def get_date_with_retry(max_retries=2):
-    """
-    Get available dates with automatic session retry on failure.
-    Detects session expiration and attempts re-login automatically.
-    """
+def get_date_with_retry(max_retries=3):
     for attempt in range(max_retries):
         try:
             session = driver.get_cookie("_yatri_session")["value"]
             script = JS_SCRIPT % (str(DATE_URL), session)
             content = driver.execute_script(script)
-
-            # Check if content is empty or invalid
             if not content or content.strip() == '':
                 raise ValueError("Empty response from API")
-
             return json.loads(content)
         except Exception as e:
             if is_session_expired_error(e) and attempt < max_retries - 1:
-                # Try to re-login
-                if relogin():
-                    continue  # Retry the API call
-                else:
-                    raise  # Re-login failed, propagate error
+                if relogin(): continue
+                else: raise
+            elif isinstance(e, WebDriverException) and attempt < max_retries - 1:
+                print(f"Network error (attempt {attempt+1}/{max_retries}): {e}")
+                time.sleep(60) # Internal temporary network sleep
             else:
-                # Not a session error or last retry, propagate error
                 raise
 
-
-def get_time(date):
-    time_url = TIME_URL % date
-    session = driver.get_cookie("_yatri_session")["value"]
-    script = JS_SCRIPT % (str(time_url), session)
-    content = driver.execute_script(script)
-    data = json.loads(content)
-    time = data.get("available_times")[-1]
-    print(f"Got time successfully! {date} {time}")
-    return time
-
-
-def get_time_with_retry(date, max_retries=2):
-    """
-    Get available time with automatic session retry on failure.
-    Detects session expiration and attempts re-login automatically.
-    """
+def get_time_with_retry(date, max_retries=3):
     for attempt in range(max_retries):
         try:
             time_url = TIME_URL % date
             session = driver.get_cookie("_yatri_session")["value"]
             script = JS_SCRIPT % (str(time_url), session)
             content = driver.execute_script(script)
-
-            # Check if content is empty or invalid
             if not content or content.strip() == '':
                 raise ValueError("Empty response from API")
-
             data = json.loads(content)
-            time = data.get("available_times")[-1]
-            print(f"Got time successfully! {date} {time}")
-            return time
+            return data.get("available_times")[-1]
         except Exception as e:
-            if is_session_expired_error(e) and attempt < max_retries - 1:
-                # Try to re-login
-                if relogin():
-                    continue  # Retry the API call
-                else:
-                    raise  # Re-login failed, propagate error
-            else:
-                # Not a session error or last retry, propagate error
-                raise
-
-
-def is_logged_in():
-    content = driver.page_source
-    if(content.find("error") != -1):
-        return False
-    return True
-
+             if is_session_expired_error(e) and attempt < max_retries - 1:
+                if relogin(): continue
+                else: raise
+             else: raise
 
 def get_available_date(dates):
-    # Evaluation of different available dates
     def is_in_period(date, PSD, PED):
         new_date = datetime.strptime(date, "%Y-%m-%d")
-        result = ( PED > new_date and new_date > PSD )
-        # print(f'{new_date.date()} : {result}', end=", ")
-        return result
+        return ( PED > new_date and new_date > PSD )
     
     PED = datetime.strptime(PRIOD_END, "%Y-%m-%d")
     PSD = datetime.strptime(PRIOD_START, "%Y-%m-%d")
@@ -374,94 +253,101 @@ def get_available_date(dates):
             return date
     print(f"\n\nNo available dates between ({PSD.date()}) and ({PED.date()})!")
 
-
 def info_logger(file_path, log):
-    # file_path: e.g. "log.txt"
     with open(file_path, "a") as file:
         file.write(str(datetime.now().time()) + ":\n" + log + "\n")
 
+def cleanup_and_exit(exit_code):
+    try:
+        if driver:
+            print("Closing Chrome Driver...")
+            driver.quit()
+    except:
+        pass
+    print(f"Exiting with code {exit_code}")
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
-    first_loop = True
-    # Ensure logs directory exists
     os.makedirs("logs", exist_ok=True)
-    while 1:
-        LOG_FILE_NAME = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
-        if first_loop:
-            # Add session divider to log file
-            session_divider = "\n" + "=" * 80 + "\n"
-            session_divider += f"NEW SESSION STARTED: {datetime.now()}\n"
-            session_divider += "=" * 80 + "\n"
-            info_logger(LOG_FILE_NAME, session_divider)
-
-            t0 = time.time()
-            total_time = 0
-            Req_count = 0
-            start_process()
-            first_loop = False
-        Req_count += 1
-        try:
+    LOG_FILE_NAME = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
+    
+    init_driver()
+    
+    session_divider = "\n" + "=" * 80 + "\n"
+    session_divider += f"NEW SESSION STARTED: {datetime.now()}\n"
+    session_divider += "=" * 80 + "\n"
+    info_logger(LOG_FILE_NAME, session_divider)
+    
+    t0 = time.time()
+    Req_count = 0
+    network_retry_count = 0
+    
+    try:
+        start_process()
+        
+        while True:
+            Req_count += 1
             msg = "-" * 60 + f"\nRequest count: {Req_count}, Log time: {datetime.today()}\n"
             print(msg)
             info_logger(LOG_FILE_NAME, msg)
-            dates = get_date_with_retry()
-            if not dates:
-                # Ban Situation
-                msg = f"List is empty, Probabely banned!\n\tSleep for {BAN_COOLDOWN_TIME} hours!\n"
-                print(msg)
-                info_logger(LOG_FILE_NAME, msg)
-                send_notification("BAN", msg)
-                driver.get(SIGN_OUT_LINK)
-                time.sleep(BAN_COOLDOWN_TIME * hour)
-                # Log session restart after ban
-                restart_msg = "\n" + "=" * 80 + "\n"
-                restart_msg += f"RESTARTING AFTER BAN COOLDOWN: {datetime.now()}\n"
-                restart_msg += "=" * 80 + "\n"
-                info_logger(LOG_FILE_NAME, restart_msg)
-                first_loop = True
-            else:
-                # Print Available dates:
+            
+            try:
+                dates = get_date_with_retry()
+                network_retry_count = 0 # Reset on success
+                
+                if not dates:
+                    # BAN DETECTED
+                    msg = "List is empty, Probably banned! Exiting with code 2."
+                    print(msg)
+                    info_logger(LOG_FILE_NAME, msg)
+                    send_notification("BAN DETECTED", msg)
+                    cleanup_and_exit(EXIT_BAN)
+                
                 msg = "Available dates:\n"
                 for d in dates:
                     msg = msg + "%s" % (d.get('date')) + ", "
                 print(msg)
                 info_logger(LOG_FILE_NAME, msg)
+                
                 date = get_available_date(dates)
                 if date:
-                    # A good date to schedule for
                     send_notification("Rescheduling Started", date)
-                    END_MSG_TITLE, msg = reschedule(date)
-                    break
-                RETRY_WAIT_TIME = RETRY_TIME
+                    res = reschedule(date)
+                    send_notification(res[0], res[1])
+                    cleanup_and_exit(EXIT_WORK_LIMIT) # Exit after successful schedule? Or continue? Usually stop.
+                    
+                # Time Checks
                 t1 = time.time()
                 total_time = t1 - t0
-                msg = "\nWorking Time:  ~ {:.2f} minutes".format(total_time/minute)
+                running_minutes = total_time/minute
+                msg = "\nWorking Time:  ~ {:.2f} minutes".format(running_minutes)
                 print(msg)
                 info_logger(LOG_FILE_NAME, msg)
+                
                 if total_time > WORK_LIMIT_TIME * hour:
-                    # Exit for PM2 to restart (relative interval)
-                    msg = f"Work limit reached ({WORK_LIMIT_TIME}h), exiting for PM2 restart | Repeated {Req_count} times"
+                    msg = f"Work limit reached ({WORK_LIMIT_TIME}h). Exiting for restart."
                     print(msg)
                     info_logger(LOG_FILE_NAME, msg)
-                    send_notification("PM2 RESTART", msg)
-                    END_MSG_TITLE = "WORK_LIMIT_RESTART"
-                    driver.get(SIGN_OUT_LINK)
-                    break  # Exit script, PM2 will restart immediately
-                else:
-                    msg = "Retry Wait Time: "+ str(RETRY_WAIT_TIME)+ " seconds"
-                    print(msg)
-                    info_logger(LOG_FILE_NAME, msg)
-                    time.sleep(RETRY_WAIT_TIME)
-        except Exception as e:
-            # Exception Occured
-            msg = f"Break the loop after exception!\nError: {str(e)}\n"
-            END_MSG_TITLE = "EXCEPTION"
-            break
-
-    # Cleanup after loop ends
-    print(msg)
-    info_logger(LOG_FILE_NAME, msg)
-    send_notification(END_MSG_TITLE, msg)
-    driver.get(SIGN_OUT_LINK)
-    driver.stop_client()
-    driver.quit()
+                    cleanup_and_exit(EXIT_WORK_LIMIT)
+                
+                # Randomized Wait
+                RETRY_WAIT_TIME = random.uniform(RETRY_TIME_L_BOUND, RETRY_TIME_U_BOUND)
+                msg = "Retry Wait Time: {:.1f} seconds".format(RETRY_WAIT_TIME)
+                print(msg)
+                info_logger(LOG_FILE_NAME, msg)
+                time.sleep(RETRY_WAIT_TIME)
+                
+            except Exception as e:
+                # Network or API errors
+                print(f"Error in loop: {e}")
+                network_retry_count += 1
+                if network_retry_count >= 3:
+                     msg = "Max network retries exceeded. Exiting with code 3."
+                     print(msg)
+                     info_logger(LOG_FILE_NAME, msg)
+                     cleanup_and_exit(EXIT_NETWORK)
+                time.sleep(60) # Short sleep before loop retry
+                
+    except Exception as e:
+        print(f"Top level exception: {e}")
+        cleanup_and_exit(EXIT_NETWORK)

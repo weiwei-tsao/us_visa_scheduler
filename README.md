@@ -55,12 +55,14 @@ TELEGRAM_CHAT_ID =
 
 [TIME]
 ; Time between retries/checks for available dates (seconds)
-RETRY_TIME = 60
-; Cooling down after WORK_LIMIT_TIME hours of work (Avoiding Ban)(hours)
-WORK_LIMIT_TIME = 8
-WORK_COOLDOWN_TIME = 1
-; Temporary Banned (empty list): wait COOLDOWN_TIME (hours)
-BAN_COOLDOWN_TIME = 0.5
+; Randomized interval bounds (5 min - 15 min)
+RETRY_TIME_L_BOUND = 300
+RETRY_TIME_U_BOUND = 900
+; Script runtime limit before clean restart (hours)
+; 0.75 hours = 45 minutes
+WORK_LIMIT_TIME = 0.75
+; Ban cooldown is handled by the wrapper script (run_visa.sh), but kept here for reference
+BAN_COOLDOWN_TIME = 24
 
 ```
 
@@ -69,7 +71,7 @@ BAN_COOLDOWN_TIME = 0.5
 ### Option 1: Manual Execution (Development/Testing)
 
 ```bash
-python3 visa.py
+./run_visa.sh
 ```
 
 This runs the script in the foreground. The terminal must stay open and the script will stop if the terminal is closed.
@@ -143,4 +145,4 @@ PM2 creates separate log files in addition to the application logs:
 - `./logs/pm2-error.log` - Errors and exceptions
 - `./logs/log_YYYY-MM-DD.txt` - Application logs (unchanged)
 
-For more details, see [docs/PM2_DESIGN.md](docs/PM2_DESIGN.md)
+For more details, see [docs/PM2_DESIGN.md](docs/PM2_DESIGN.md) and [docs/SAFE_ARCHITECTURE_UPDATE.md](docs/SAFE_ARCHITECTURE_UPDATE.md)
