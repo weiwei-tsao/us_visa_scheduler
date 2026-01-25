@@ -88,9 +88,15 @@ def analyze_dates(dates):
         
     print("-" * 50)
     print("\nDetailed List of Available Dates:")
-    # Print in a nice grid or column format
-    # Let's just print comma separated list
-    print(", ".join(sorted_dates))
+
+    # Print in a grid format (4 columns to fit within ~50 char width)
+    num_cols = 4
+    col_width = 12  # "YYYY-MM-DD" is 10 chars + 2 padding
+
+    for i in range(0, len(sorted_dates), num_cols):
+        row = sorted_dates[i:i+num_cols]
+        print("".join(date.ljust(col_width) for date in row))
+
     print("\n" + "="*50)
 
 if __name__ == "__main__":
