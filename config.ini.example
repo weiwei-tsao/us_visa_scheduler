@@ -17,6 +17,13 @@ LOCAL_USE = True
 ; Optional: HUB_ADDRESS is mandatory only when LOCAL_USE = False
 HUB_ADDRESS = http://localhost:9515/wd/hub
 
+[BEHAVIOR]
+; Headless mode: run without opening a visible browser window
+; WARNING: Headless mode may increase detection risk
+HEADLESS = False
+; Delay between steps (seconds) to mimic human speed
+STEP_DELAY = 0.5
+
 [NOTIFICATION]
 ; Get email notifications via https://sendgrid.com/ (optional)
 SENDGRID_API_KEY =
@@ -30,9 +37,11 @@ TELEGRAM_CHAT_ID =
 
 [TIME]
 ; Time between retries/checks for available dates (seconds)
-RETRY_TIME = 60
-; Cooling down after WORK_LIMIT_TIME hours of work (Avoiding Ban)(hours)
-WORK_LIMIT_TIME = 1.5
-WORK_COOLDOWN_TIME = 2.25
-; Temporary Banned (empty list): wait COOLDOWN_TIME (hours)
-BAN_COOLDOWN_TIME = 5
+; Randomized interval bounds (5 min - 15 min)
+RETRY_TIME_L_BOUND = 300
+RETRY_TIME_U_BOUND = 900
+; Script runtime limit before clean restart (hours)
+; 0.75 hours = 45 minutes
+WORK_LIMIT_TIME = 0.75
+; Ban cooldown is handled by the wrapper script (run_visa.sh), but kept here for reference
+BAN_COOLDOWN_TIME = 24

@@ -11,6 +11,11 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import WebDriverException
+try:
+    import undetected_chromedriver as uc
+except ImportError:
+    uc = None
+
 
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait as Wait
@@ -50,6 +55,13 @@ TELEGRAM_CHAT_ID = config['NOTIFICATION'].get('TELEGRAM_CHAT_ID', '')
 minute = 60
 hour = 60 * minute
 STEP_TIME = 0.5
+if 'BEHAVIOR' in config:
+    HEADLESS = config['BEHAVIOR'].getboolean('HEADLESS')
+    STEP_TIME = config['BEHAVIOR'].getfloat('STEP_DELAY')
+else:
+    HEADLESS = False
+
+# Randomized Retry Logic
 
 # Randomized Retry Logic
 RETRY_TIME_L_BOUND = config['TIME'].getfloat('RETRY_TIME_L_BOUND')
@@ -81,14 +93,38 @@ driver = None
 def init_driver():
     global driver
     if LOCAL_USE:
+        # Try undetected-chromedriver first (Stealth Mode)
+        if uc:
+            try:
+                options = webdriver.ChromeOptions()
+                if HEADLESS:
+                    options.add_argument('--headless')
+                driver = uc.Chrome(options=options)
+                print("Initialized undetected-chromedriver (Stealth Mode)")
+                return
+            except Exception as e:
+                print(f"undetected-chromedriver failed: {e}")
+                print("Falling back to standard Selenium...")
+        
+        # Fallback to standard Selenium
         try:
-            driver = webdriver.Chrome()
+            options = webdriver.ChromeOptions()
+            if HEADLESS:
+                options.add_argument('--headless')
+            driver = webdriver.Chrome(options=options)
         except Exception as e:
             print(f"Failed to initialize Chrome with default driver: {e}")
             print("Trying with webdriver-manager...")
-            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+            options = webdriver.ChromeOptions()
+            if HEADLESS:
+                options.add_argument('--headless')
+            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
     else:
-        driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=webdriver.ChromeOptions())
+        options = webdriver.ChromeOptions()
+        if HEADLESS:
+            options.add_argument('--headless')
+        driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=options)
+
 
 def send_notification(title, msg):
     print(f"Sending notification!")

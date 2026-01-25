@@ -2,6 +2,11 @@
 
 The visa_rescheduler is a bot for US VISA (usvisa-info.com) appointment rescheduling. This bot can help you reschedule your appointment to your desired time period.
 
+**New Features**:
+-   **Stealth Mode**: Uses `undetected-chromedriver` to mimic human behavior and avoid detection.
+-   **Headless Support**: Can now run on servers without a display.
+
+
 ## Prerequisites
 
 - Having a US VISA appointment scheduled already.
@@ -40,6 +45,14 @@ YOUR_EMBASSY = en-ca-tor
 LOCAL_USE = True
 ; Optional: HUB_ADDRESS is mandatory only when LOCAL_USE = False
 HUB_ADDRESS = http://localhost:9515/wd/hub
+
+[BEHAVIOR]
+; Headless mode: run without opening a visible browser window (default: False)
+; WARNING: Headless mode may increase detection risk
+HEADLESS = False
+; Delay between steps in seconds (default: 0.5)
+STEP_DELAY = 0.5
+
 
 [NOTIFICATION]
 ; Get email notifications via https://sendgrid.com/ (optional)
