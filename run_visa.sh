@@ -6,7 +6,7 @@ EXIT_BAN=2
 EXIT_NETWORK=3
 
 # Cooldown times (seconds)
-BAN_COOLDOWN=86400      # 24 hours
+BAN_COOLDOWN=14400      # 4 hours
 (sleep 5m)
 NETWORK_COOLDOWN=300    # 5 minutes
 CRASH_COOLDOWN=60       # 1 minute
@@ -29,7 +29,7 @@ while true; do
             # No sleep, loop continues
             ;;
         $EXIT_BAN)
-            log "BAN DETECTED. Sleeping for 24 hours..."
+            log "BAN DETECTED. Sleeping for 4 hours..."
             sleep $BAN_COOLDOWN
             ;;
         $EXIT_NETWORK)

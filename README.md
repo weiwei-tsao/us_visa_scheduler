@@ -138,6 +138,21 @@ pm2 delete visa-scheduler
 ./status.sh
 ```
 
+
+## Log Analysis
+
+To analyze the log files and see a summary of all available appointment dates found by the bot:
+
+```bash
+python3 analyze_logs.py
+```
+
+This script parses all `log_*.txt` files in the `logs/` directory and outputs:
+- Total unique dates found
+- Earliest and latest dates
+- Availability breakdown by month
+- A complete list of all unique dates
+
 #### PM2 Log Files
 
 PM2 creates separate log files in addition to the application logs:
