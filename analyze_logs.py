@@ -89,13 +89,26 @@ def analyze_dates(dates):
     print("-" * 50)
     print("\nDetailed List of Available Dates:")
 
-    # Print in a grid format (4 columns to fit within ~50 char width)
-    num_cols = 4
-    col_width = 12  # "YYYY-MM-DD" is 10 chars + 2 padding
+    # Group by Year -> Month
+    dates_by_year = defaultdict(lambda: defaultdict(list))
+    for date_str in sorted_dates:
+        year = date_str[:4]
+        month = date_str[5:7]
+        dates_by_year[year][month].append(date_str)
 
-    for i in range(0, len(sorted_dates), num_cols):
-        row = sorted_dates[i:i+num_cols]
-        print("".join(date.ljust(col_width) for date in row))
+    col_width = 12
+    num_cols = 4
+
+    for year in sorted(dates_by_year.keys()):
+        print(f"\n{year}")
+        for month in sorted(dates_by_year[year].keys()):
+            month_name = datetime.strptime(month, "%m").strftime("%B")
+            print(f"  {month_name}")
+            
+            month_dates = dates_by_year[year][month]
+            for i in range(0, len(month_dates), num_cols):
+                row = month_dates[i:i+num_cols]
+                print("    " + "".join(d.ljust(col_width) for d in row))
 
     print("\n" + "="*50)
 
