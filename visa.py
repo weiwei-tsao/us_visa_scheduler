@@ -280,12 +280,18 @@ def get_available_date(dates):
     def is_in_period(date, PSD, PED):
         new_date = datetime.strptime(date, "%Y-%m-%d")
         return ( PED > new_date and new_date > PSD )
-    
+
+    def extract_date(d):
+        # Handle both dict format {"date": "..."} and string format "..."
+        if isinstance(d, dict):
+            return d.get('date')
+        return d
+
     PED = datetime.strptime(PRIOD_END, "%Y-%m-%d")
     PSD = datetime.strptime(PRIOD_START, "%Y-%m-%d")
     for d in dates:
-        date = d.get('date')
-        if is_in_period(date, PSD, PED):
+        date = extract_date(d)
+        if date and is_in_period(date, PSD, PED):
             return date
     print(f"\n\nNo available dates between ({PSD.date()}) and ({PED.date()})!")
 
@@ -329,6 +335,10 @@ if __name__ == "__main__":
             
             try:
                 dates = get_date_with_retry()
+                
+                if not isinstance(dates, list):
+                    raise ValueError(f"Unexpected response type: {type(dates)} - {dates}")
+
                 network_retry_count = 0 # Reset on success
                 
                 if not dates:
@@ -341,7 +351,8 @@ if __name__ == "__main__":
                 
                 msg = "Available dates:\n"
                 for d in dates:
-                    msg = msg + "%s" % (d.get('date')) + ", "
+                    date_val = d.get('date') if isinstance(d, dict) else d
+                    msg = msg + "%s" % date_val + ", "
                 print(msg)
                 info_logger(LOG_FILE_NAME, msg)
                 
