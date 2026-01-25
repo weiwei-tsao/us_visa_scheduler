@@ -166,6 +166,17 @@ This script parses all `log_*.txt` files in the `logs/` directory and outputs:
 - Availability breakdown by month
 - A complete list of all unique dates
 
+
+## PM2 Log Analysis
+
+To analyze the PM2 logs and understand bot execution patterns (sessions, durations, sleeps):
+
+```bash
+python3 analyze_pm2.py
+```
+
+This script parses `logs/pm2-out.log` and outputs a table of detected sessions, including start/end times, duration, and outcomes (e.g., Running, Sleeping).
+
 #### PM2 Log Files
 
 PM2 creates separate log files in addition to the application logs:
