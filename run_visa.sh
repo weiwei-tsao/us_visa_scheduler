@@ -20,7 +20,7 @@ mkdir -p logs
 
 while true; do
     log "Starting Visa Scheduler..."
-    python3 visa.py
+    ./venv/bin/python visa.py
     EXIT_CODE=$?
     
     case $EXIT_CODE in
