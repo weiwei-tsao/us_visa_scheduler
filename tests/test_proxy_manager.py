@@ -497,5 +497,176 @@ class TestDriverIntegration(unittest.TestCase):
         self.assertNotEqual(first['host'], third['host'])
 
 
+class TestProxyFormatValidation(unittest.TestCase):
+    """Test proxy URL format validation and common mistakes."""
+
+    def test_missing_protocol_rejected(self):
+        """Proxy without protocol prefix should be rejected."""
+        from proxy_manager import ProxyManager
+
+        # Common mistake: missing http://
+        manager = ProxyManager(proxy_list=['proxy.example.com:8080'])
+        self.assertEqual(manager.total_count, 0)
+        self.assertFalse(manager.has_proxies)
+
+    def test_missing_port_rejected(self):
+        """Proxy without port should be rejected."""
+        from proxy_manager import ProxyManager
+
+        manager = ProxyManager(proxy_list=['http://proxy.example.com'])
+        self.assertEqual(manager.total_count, 0)
+
+    def test_brightdata_format_valid(self):
+        """Bright Data proxy format should be valid."""
+        from proxy_manager import ProxyManager
+
+        # Typical Bright Data format
+        proxy = 'http://brd-customer-xxx-zone-residential:password@brd.superproxy.io:33335'
+        manager = ProxyManager(proxy_list=[proxy])
+
+        self.assertEqual(manager.total_count, 1)
+        self.assertTrue(manager.has_proxies)
+
+        current = manager.get_proxy()
+        self.assertEqual(current['host'], 'brd.superproxy.io')
+        self.assertEqual(current['port'], 33335)
+        self.assertEqual(current['user'], 'brd-customer-xxx-zone-residential')
+        self.assertEqual(current['password'], 'password')
+
+    def test_special_chars_in_password(self):
+        """Password with special characters should work."""
+        from proxy_manager import ProxyManager
+
+        # Password with special chars (URL encoded)
+        proxy = 'http://user:p%40ssw0rd@proxy.example.com:8080'
+        manager = ProxyManager(proxy_list=[proxy])
+
+        self.assertEqual(manager.total_count, 1)
+        current = manager.get_proxy()
+        self.assertEqual(current['password'], 'p%40ssw0rd')
+
+    def test_ipv4_address_valid(self):
+        """IPv4 address as host should be valid."""
+        from proxy_manager import ProxyManager
+
+        proxy = 'http://192.168.1.100:8080'
+        manager = ProxyManager(proxy_list=[proxy])
+
+        self.assertEqual(manager.total_count, 1)
+        self.assertEqual(manager.get_proxy()['host'], '192.168.1.100')
+
+    def test_socks5_with_auth(self):
+        """SOCKS5 proxy with authentication should work."""
+        from proxy_manager import ProxyManager
+
+        proxy = 'socks5://user:pass@socks.example.com:1080'
+        manager = ProxyManager(proxy_list=[proxy])
+
+        self.assertEqual(manager.total_count, 1)
+        current = manager.get_proxy()
+        self.assertEqual(current['protocol'], 'socks5')
+        self.assertEqual(current['user'], 'user')
+
+
+class TestProxyVerification(unittest.TestCase):
+    """Test proxy setup verification utilities."""
+
+    def test_verify_proxy_config_complete(self):
+        """Complete proxy config should pass verification."""
+        from proxy_manager import ProxyManager
+
+        proxies = ['http://user:pass@proxy.example.com:8080']
+        manager = ProxyManager(proxy_list=proxies, rotation_strategy='on_ban')
+
+        # Verify all required attributes
+        self.assertTrue(manager.has_proxies)
+        self.assertEqual(manager.total_count, 1)
+        self.assertEqual(manager.available_count, 1)
+        self.assertEqual(manager.rotation_strategy, 'on_ban')
+
+        # Verify proxy details
+        proxy = manager.get_proxy()
+        self.assertIsNotNone(proxy)
+        self.assertIn('host', proxy)
+        self.assertIn('port', proxy)
+        self.assertIn('protocol', proxy)
+        self.assertIn('user', proxy)
+        self.assertIn('password', proxy)
+
+        # Verify Chrome args generation
+        args = manager.get_chrome_options_args(proxy)
+        self.assertEqual(len(args), 1)
+        self.assertTrue(args[0].startswith('--proxy-server='))
+
+    def test_verify_empty_config(self):
+        """Empty proxy config should be handled gracefully."""
+        from proxy_manager import ProxyManager
+
+        manager = ProxyManager(proxy_list=[])
+
+        self.assertFalse(manager.has_proxies)
+        self.assertEqual(manager.total_count, 0)
+        self.assertIsNone(manager.get_proxy())
+        self.assertEqual(manager.get_chrome_options_args(), [])
+
+    def test_verify_config_from_file(self):
+        """Verify loading proxy config from config file."""
+        from proxy_manager import load_proxy_config
+        import configparser
+        import os
+
+        # Check if real config.ini exists
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config.ini'
+        )
+
+        if not os.path.exists(config_path):
+            self.skipTest("config.ini not found")
+
+        config = configparser.ConfigParser()
+        config.read(config_path)
+
+        enabled, manager = load_proxy_config(config)
+
+        # Just verify it loads without error
+        if enabled:
+            self.assertIsNotNone(manager)
+            self.assertGreaterEqual(manager.total_count, 0)
+        else:
+            # Disabled is also valid
+            self.assertTrue(True)
+
+    def test_multiple_proxies_all_valid(self):
+        """All valid proxies should be loaded."""
+        from proxy_manager import ProxyManager
+
+        proxies = [
+            'http://proxy1.example.com:8080',
+            'http://user:pass@proxy2.example.com:8080',
+            'socks5://proxy3.example.com:1080',
+            'https://proxy4.example.com:443'
+        ]
+        manager = ProxyManager(proxy_list=proxies)
+
+        self.assertEqual(manager.total_count, 4)
+        self.assertEqual(manager.available_count, 4)
+
+    def test_mixed_valid_invalid_proxies(self):
+        """Only valid proxies should be loaded from mixed list."""
+        from proxy_manager import ProxyManager
+
+        proxies = [
+            'http://valid1.example.com:8080',  # Valid
+            'invalid-no-protocol:8080',         # Invalid - no protocol
+            'http://valid2.example.com:8080',  # Valid
+            'ftp://invalid.example.com:21',     # Invalid - unsupported protocol
+            'socks5://valid3.example.com:1080' # Valid
+        ]
+        manager = ProxyManager(proxy_list=proxies)
+
+        self.assertEqual(manager.total_count, 3)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

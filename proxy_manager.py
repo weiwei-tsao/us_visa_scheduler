@@ -7,7 +7,11 @@ Handles proxy rotation, health checking, and failover for avoiding IP bans.
 import random
 import re
 import requests
+import urllib3
 from urllib.parse import urlparse
+
+# Suppress SSL warnings for residential proxies that use SSL interception
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class ProxyManager:
@@ -169,6 +173,10 @@ class ProxyManager:
         """
         Check if a proxy is working.
 
+        Tries HTTPS with SSL verification first, then falls back to
+        SSL verification disabled for residential proxies that use
+        SSL interception (e.g., Bright Data).
+
         Args:
             proxy: Proxy dict to check (uses current if None)
             timeout: Request timeout in seconds
@@ -190,16 +198,30 @@ class ProxyManager:
             'https': proxy_url
         }
 
-        try:
-            # Test against a reliable endpoint
-            response = requests.get(
-                'https://httpbin.org/ip',
-                proxies=proxies,
-                timeout=timeout
-            )
-            return response.status_code == 200
-        except Exception:
-            return False
+        test_endpoints = [
+            ('https://httpbin.org/ip', True),   # HTTPS with SSL verify
+            ('https://httpbin.org/ip', False),  # HTTPS without SSL verify (for residential proxies)
+            ('http://httpbin.org/ip', True),    # HTTP fallback
+        ]
+
+        for url, verify_ssl in test_endpoints:
+            try:
+                response = requests.get(
+                    url,
+                    proxies=proxies,
+                    timeout=timeout,
+                    verify=verify_ssl
+                )
+                if response.status_code == 200:
+                    return True
+            except requests.exceptions.SSLError:
+                # SSL error, try next endpoint (likely residential proxy with SSL interception)
+                continue
+            except Exception:
+                # Other error, try next endpoint
+                continue
+
+        return False
 
     def get_chrome_options_args(self, proxy=None):
         """
