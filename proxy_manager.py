@@ -4,10 +4,14 @@ Proxy Manager for US Visa Scheduler
 Handles proxy rotation, health checking, and failover for avoiding IP bans.
 """
 
+import json
+import os
 import random
 import re
 import requests
+import tempfile
 import urllib3
+import zipfile
 from urllib.parse import urlparse
 
 # Suppress SSL warnings for residential proxies that use SSL interception
@@ -223,9 +227,94 @@ class ProxyManager:
 
         return False
 
+    def create_proxy_auth_extension(self, proxy=None):
+        """
+        Create a Chrome extension for proxy authentication.
+
+        Chrome's --proxy-server doesn't support authentication, so we need
+        to create a temporary extension that handles the auth popup.
+
+        Args:
+            proxy: Proxy dict (uses current if None)
+
+        Returns:
+            Path to the extension zip file, or None if no auth needed
+        """
+        if proxy is None:
+            proxy = self.get_proxy()
+
+        if proxy is None or not proxy.get('user') or not proxy.get('password'):
+            return None
+
+        manifest_json = """
+{
+    "version": "1.0.0",
+    "manifest_version": 2,
+    "name": "Proxy Auth Extension",
+    "permissions": [
+        "proxy",
+        "tabs",
+        "unlimitedStorage",
+        "storage",
+        "<all_urls>",
+        "webRequest",
+        "webRequestBlocking"
+    ],
+    "background": {
+        "scripts": ["background.js"]
+    },
+    "minimum_chrome_version": "76.0.0"
+}
+"""
+
+        background_js = """
+var config = {
+    mode: "fixed_servers",
+    rules: {
+        singleProxy: {
+            scheme: "%s",
+            host: "%s",
+            port: parseInt(%s)
+        },
+        bypassList: ["localhost"]
+    }
+};
+
+chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+
+function callbackFn(details) {
+    return {
+        authCredentials: {
+            username: "%s",
+            password: "%s"
+        }
+    };
+}
+
+chrome.webRequest.onAuthRequired.addListener(
+    callbackFn,
+    {urls: ["<all_urls>"]},
+    ['blocking']
+);
+""" % (proxy['protocol'], proxy['host'], proxy['port'],
+       proxy['user'], proxy['password'])
+
+        # Create temp directory for extension
+        ext_dir = tempfile.mkdtemp(prefix='proxy_auth_')
+        ext_path = os.path.join(ext_dir, 'proxy_auth.zip')
+
+        with zipfile.ZipFile(ext_path, 'w') as zp:
+            zp.writestr("manifest.json", manifest_json)
+            zp.writestr("background.js", background_js)
+
+        return ext_path
+
     def get_chrome_options_args(self, proxy=None):
         """
         Get Chrome options arguments for proxy.
+
+        For unauthenticated proxies, returns --proxy-server argument.
+        For authenticated proxies, returns empty list (use extension instead).
 
         Args:
             proxy: Proxy dict (uses current if None)
@@ -239,13 +328,38 @@ class ProxyManager:
         if proxy is None:
             return []
 
+        # If proxy has authentication, don't use --proxy-server
+        # (must use extension instead)
+        if proxy.get('user') and proxy.get('password'):
+            return []
+
         args = []
 
-        # Basic proxy argument
-        proxy_url = proxy['url']
-        args.append(f'--proxy-server={proxy_url}')
+        # Simple proxy without auth
+        protocol = proxy['protocol']
+        host = proxy['host']
+        port = proxy['port']
+        args.append(f'--proxy-server={protocol}://{host}:{port}')
 
         return args
+
+    def requires_auth_extension(self, proxy=None):
+        """
+        Check if proxy requires authentication extension.
+
+        Args:
+            proxy: Proxy dict (uses current if None)
+
+        Returns:
+            True if proxy has authentication credentials
+        """
+        if proxy is None:
+            proxy = self.get_proxy()
+
+        if proxy is None:
+            return False
+
+        return bool(proxy.get('user') and proxy.get('password'))
 
     def get_selenium_proxy(self, proxy=None):
         """

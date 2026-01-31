@@ -419,6 +419,7 @@ JS_SCRIPT = ("var req = new XMLHttpRequest();"
              "return req.responseText;")
 
 driver = None
+proxy_extension_path = None  # Track extension path for cleanup
 
 def init_driver(proxy_manager=None):
     """
@@ -427,15 +428,24 @@ def init_driver(proxy_manager=None):
     Args:
         proxy_manager: Optional ProxyManager instance for proxy support
     """
-    global driver
+    global driver, proxy_extension_path
 
-    # Get proxy arguments if proxy is enabled
+    # Get proxy configuration if enabled
     proxy_args = []
+    proxy_extension = None
+
     if proxy_manager and proxy_manager.has_proxies:
         proxy = proxy_manager.get_proxy()
         if proxy:
-            proxy_args = proxy_manager.get_chrome_options_args(proxy)
             print(f"[PROXY] Using proxy: {proxy['host']}:{proxy['port']}")
+
+            # Check if proxy requires authentication
+            if proxy_manager.requires_auth_extension(proxy):
+                print("[PROXY] Creating authentication extension...")
+                proxy_extension = proxy_manager.create_proxy_auth_extension(proxy)
+                proxy_extension_path = proxy_extension
+            else:
+                proxy_args = proxy_manager.get_chrome_options_args(proxy)
 
     if LOCAL_USE:
         # Try undetected-chromedriver first (Stealth Mode)
@@ -446,6 +456,8 @@ def init_driver(proxy_manager=None):
                     options.add_argument('--headless')
                 for arg in proxy_args:
                     options.add_argument(arg)
+                if proxy_extension:
+                    options.add_extension(proxy_extension)
                 driver = uc.Chrome(options=options)
                 print("Initialized undetected-chromedriver (Stealth Mode)")
                 return
@@ -460,6 +472,8 @@ def init_driver(proxy_manager=None):
                 options.add_argument('--headless')
             for arg in proxy_args:
                 options.add_argument(arg)
+            if proxy_extension:
+                options.add_extension(proxy_extension)
             driver = webdriver.Chrome(options=options)
         except Exception as e:
             print(f"Failed to initialize Chrome with default driver: {e}")
@@ -469,6 +483,8 @@ def init_driver(proxy_manager=None):
                 options.add_argument('--headless')
             for arg in proxy_args:
                 options.add_argument(arg)
+            if proxy_extension:
+                options.add_extension(proxy_extension)
             driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
     else:
         options = webdriver.ChromeOptions()
@@ -476,6 +492,8 @@ def init_driver(proxy_manager=None):
             options.add_argument('--headless')
         for arg in proxy_args:
             options.add_argument(arg)
+        if proxy_extension:
+            options.add_extension(proxy_extension)
         driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=options)
 
 

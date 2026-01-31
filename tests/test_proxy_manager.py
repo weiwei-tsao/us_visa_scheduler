@@ -593,10 +593,43 @@ class TestProxyVerification(unittest.TestCase):
         self.assertIn('user', proxy)
         self.assertIn('password', proxy)
 
-        # Verify Chrome args generation
+        # Authenticated proxies use extension, not chrome args
+        self.assertTrue(manager.requires_auth_extension(proxy))
+        args = manager.get_chrome_options_args(proxy)
+        self.assertEqual(len(args), 0)  # Empty because auth proxies use extension
+
+    def test_verify_unauthenticated_proxy_uses_args(self):
+        """Unauthenticated proxy should use chrome args."""
+        from proxy_manager import ProxyManager
+
+        proxies = ['http://proxy.example.com:8080']
+        manager = ProxyManager(proxy_list=proxies)
+
+        proxy = manager.get_proxy()
+        self.assertFalse(manager.requires_auth_extension(proxy))
+
         args = manager.get_chrome_options_args(proxy)
         self.assertEqual(len(args), 1)
         self.assertTrue(args[0].startswith('--proxy-server='))
+
+    def test_create_auth_extension(self):
+        """Should create auth extension for authenticated proxy."""
+        from proxy_manager import ProxyManager
+        import os
+
+        proxies = ['http://user:pass@proxy.example.com:8080']
+        manager = ProxyManager(proxy_list=proxies)
+
+        proxy = manager.get_proxy()
+        ext_path = manager.create_proxy_auth_extension(proxy)
+
+        self.assertIsNotNone(ext_path)
+        self.assertTrue(os.path.exists(ext_path))
+        self.assertTrue(ext_path.endswith('.zip'))
+
+        # Cleanup
+        os.unlink(ext_path)
+        os.rmdir(os.path.dirname(ext_path))
 
     def test_verify_empty_config(self):
         """Empty proxy config should be handled gracefully."""
