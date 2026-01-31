@@ -192,6 +192,210 @@ def handle_empty_response(consecutive_count, cooldown_config, log_file=None):
 
     return {'action': 'sleep', 'duration': cooldown}
 
+
+# Default retry time bounds (in seconds)
+DEFAULT_RETRY_TIME_L_BOUND = 111
+DEFAULT_RETRY_TIME_U_BOUND = 300
+
+
+def validate_retry_time_config(lower_bound, upper_bound):
+    """
+    Validate retry time configuration bounds.
+
+    Args:
+        lower_bound: Lower bound for retry interval in seconds
+        upper_bound: Upper bound for retry interval in seconds
+
+    Returns:
+        List of error messages (empty if valid)
+    """
+    errors = []
+
+    if lower_bound <= 0:
+        errors.append("Lower bound must be greater than 0 seconds")
+
+    if upper_bound <= 0:
+        errors.append("Upper bound must be greater than 0 seconds")
+
+    if lower_bound > upper_bound:
+        errors.append("Lower bound cannot be greater than upper bound")
+
+    return errors
+
+
+def get_config_warnings(lower_bound, upper_bound, proxy_enabled,
+                        sendgrid_configured=True, telegram_configured=True):
+    """
+    Get warnings for potentially risky configuration.
+
+    Args:
+        lower_bound: Lower bound for retry interval in seconds
+        upper_bound: Upper bound for retry interval in seconds
+        proxy_enabled: Whether proxy is enabled
+        sendgrid_configured: Whether SendGrid notifications are configured
+        telegram_configured: Whether Telegram notifications are configured
+
+    Returns:
+        List of warning messages
+    """
+    warnings = []
+
+    # Aggressive polling warning (< 60s without proxy)
+    if upper_bound < 60 and not proxy_enabled:
+        warnings.append(
+            "Aggressive polling interval detected (< 60s) without proxy. "
+            "This increases ban risk. Consider using a proxy or increasing interval."
+        )
+
+    # No notifications configured
+    if not sendgrid_configured and not telegram_configured:
+        warnings.append(
+            "No notification method configured. You won't be alerted "
+            "when appointments become available."
+        )
+
+    return warnings
+
+
+def validate_date_config(start_date, end_date):
+    """
+    Validate date configuration.
+
+    Args:
+        start_date: Start date string (YYYY-MM-DD format)
+        end_date: End date string (YYYY-MM-DD format)
+
+    Returns:
+        List of error messages (empty if valid)
+    """
+    errors = []
+
+    # Validate start date format
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        errors.append(f"Invalid start date format: '{start_date}'. Expected YYYY-MM-DD")
+        start_dt = None
+
+    # Validate end date format
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        errors.append(f"Invalid end date format: '{end_date}'. Expected YYYY-MM-DD")
+        end_dt = None
+
+    # Validate date order
+    if start_dt and end_dt and start_dt >= end_dt:
+        errors.append("Start date must be before end date")
+
+    return errors
+
+
+def validate_embassy_config(embassy_code):
+    """
+    Validate embassy code against known embassies.
+
+    Args:
+        embassy_code: Embassy code string (e.g., 'en-ca-tor')
+
+    Returns:
+        List of error messages (empty if valid)
+    """
+    errors = []
+
+    if embassy_code not in Embassies:
+        errors.append(
+            f"Invalid embassy code: '{embassy_code}'. "
+            f"Valid codes: {', '.join(sorted(Embassies.keys()))}"
+        )
+
+    return errors
+
+
+def get_retry_time_bounds(config):
+    """
+    Get retry time bounds from config with defaults.
+
+    Args:
+        config: ConfigParser object
+
+    Returns:
+        Tuple of (lower_bound, upper_bound) in seconds
+    """
+    lower = DEFAULT_RETRY_TIME_L_BOUND
+    upper = DEFAULT_RETRY_TIME_U_BOUND
+
+    if 'TIME' in config:
+        lower = config['TIME'].getfloat('RETRY_TIME_L_BOUND', lower)
+        upper = config['TIME'].getfloat('RETRY_TIME_U_BOUND', upper)
+
+    return (int(lower), int(upper))
+
+
+def validate_config(config):
+    """
+    Validate full configuration.
+
+    Args:
+        config: ConfigParser object
+
+    Returns:
+        Tuple of (errors, warnings) - both are lists of strings
+    """
+    errors = []
+    warnings = []
+
+    # Check required sections
+    required_sections = ['PERSONAL_INFO']
+    for section in required_sections:
+        if section not in config:
+            errors.append(f"Missing required config section: [{section}]")
+            return (errors, warnings)  # Can't continue without PERSONAL_INFO
+
+    # Validate personal info
+    personal = config['PERSONAL_INFO']
+
+    # Required fields
+    required_fields = ['USERNAME', 'PASSWORD', 'SCHEDULE_ID', 'PRIOD_START', 'PRIOD_END', 'YOUR_EMBASSY']
+    for field in required_fields:
+        if field not in personal or not personal[field]:
+            errors.append(f"Missing required field: PERSONAL_INFO.{field}")
+
+    # Validate dates
+    if 'PRIOD_START' in personal and 'PRIOD_END' in personal:
+        date_errors = validate_date_config(personal['PRIOD_START'], personal['PRIOD_END'])
+        errors.extend(date_errors)
+
+    # Validate embassy
+    if 'YOUR_EMBASSY' in personal:
+        embassy_errors = validate_embassy_config(personal['YOUR_EMBASSY'])
+        errors.extend(embassy_errors)
+
+    # Validate retry time bounds
+    lower, upper = get_retry_time_bounds(config)
+    time_errors = validate_retry_time_config(lower, upper)
+    errors.extend(time_errors)
+
+    # Get warnings
+    proxy_enabled = False  # TODO: Check proxy config when implemented
+    sendgrid_configured = False
+    telegram_configured = False
+    if 'NOTIFICATION' in config:
+        sendgrid_configured = bool(config['NOTIFICATION'].get('SENDGRID_API_KEY', ''))
+        telegram_configured = bool(config['NOTIFICATION'].get('TELEGRAM_BOT_TOKEN', ''))
+
+    config_warnings = get_config_warnings(
+        lower_bound=lower,
+        upper_bound=upper,
+        proxy_enabled=proxy_enabled,
+        sendgrid_configured=sendgrid_configured,
+        telegram_configured=telegram_configured
+    )
+    warnings.extend(config_warnings)
+
+    return (errors, warnings)
+
+
 SIGN_IN_LINK = f"https://ais.usvisa-info.com/{EMBASSY}/niv/users/sign_in"
 APPOINTMENT_URL = f"https://ais.usvisa-info.com/{EMBASSY}/niv/schedule/{SCHEDULE_ID}/appointment"
 DATE_URL = f"https://ais.usvisa-info.com/{EMBASSY}/niv/schedule/{SCHEDULE_ID}/appointment/days/{FACILITY_ID}.json?appointments[expedite]=false"
