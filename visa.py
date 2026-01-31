@@ -599,39 +599,73 @@ def start_process():
     print("\n\tlogin successful!\n")
 
 def reschedule(date):
+    """
+    Attempt to reschedule appointment to the given date.
+
+    Args:
+        date: Target date string in YYYY-MM-DD format
+
+    Returns:
+        List of [status, message] where status is "SUCCESS", "FAIL", or "NO_SLOTS"
+    """
+    # FIXED: Handle None returned when no time slots available (race condition)
     appointment_time = get_time_with_retry(date)
+    if not appointment_time:
+        return ["NO_SLOTS", f"No time slots available for {date} - slot may have been taken"]
+
     driver.get(APPOINTMENT_URL)
     time.sleep(STEP_TIME)
     Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "authenticity_token")))
-    
+
+    # FIXED: Add null check for session cookie
+    cookie = driver.get_cookie("_yatri_session")
+    if not cookie:
+        return ["FAIL", "Session cookie not found - session may have expired"]
+
     headers = {
         "User-Agent": driver.execute_script("return navigator.userAgent;"),
         "Referer": APPOINTMENT_URL,
-        "Cookie": "_yatri_session=" + driver.get_cookie("_yatri_session")["value"]
+        "Cookie": "_yatri_session=" + cookie["value"]
     }
-    
+
     data = {
         "appointments[consulate_appointment][facility_id]": FACILITY_ID,
         "appointments[consulate_appointment][date]": date,
         "appointments[consulate_appointment][time]": appointment_time,
     }
+
+    # Required field - fail if not found
     try:
         data["authenticity_token"] = driver.find_element(by=By.NAME, value='authenticity_token').get_attribute('value')
-    except:
-        return ["FAIL", f"Could not find authenticity token"]
+    except Exception as e:
+        return ["FAIL", f"Could not find authenticity token: {e}"]
 
-    try: data["utf8"] = driver.find_element(by=By.NAME, value='utf8').get_attribute('value')
-    except: pass
-    try: data["confirmed_limit_message"] = driver.find_element(by=By.NAME, value='confirmed_limit_message').get_attribute('value')
-    except: pass
-    try: data["use_consulate_appointment_capacity"] = driver.find_element(by=By.NAME, value='use_consulate_appointment_capacity').get_attribute('value')
-    except: pass
+    # FIXED: Replace bare except with specific exception handling
+    # These are optional fields - log warning but continue
+    from selenium.common.exceptions import NoSuchElementException
+    optional_fields = ['utf8', 'confirmed_limit_message', 'use_consulate_appointment_capacity']
+    for field in optional_fields:
+        try:
+            data[field] = driver.find_element(by=By.NAME, value=field).get_attribute('value')
+        except NoSuchElementException:
+            pass  # Optional field not present, continue
 
-    r = requests.post(APPOINTMENT_URL, headers=headers, data=data)
-    if(r.text.find('Successfully Scheduled') != -1):
+    # FIXED: Add timeout to prevent hanging indefinitely
+    try:
+        r = requests.post(APPOINTMENT_URL, headers=headers, data=data, timeout=30)
+    except requests.exceptions.Timeout:
+        return ["FAIL", f"Request timed out while booking {date} {appointment_time}"]
+    except requests.exceptions.RequestException as e:
+        return ["FAIL", f"Network error while booking: {e}"]
+
+    # FIXED: Case-insensitive success detection
+    response_lower = r.text.lower()
+    if 'successfully scheduled' in response_lower:
         return ["SUCCESS", f"Rescheduled Successfully! {date} {appointment_time}"]
     else:
-        return ["FAIL", f"Reschedule Failed!!! {date} {appointment_time}"]
+        # FIXED: Log response body for debugging
+        print(f"[BOOKING] Failed response (status {r.status_code}): {r.text[:500]}")
+        return ["FAIL", f"Reschedule Failed!!! {date} {appointment_time} (HTTP {r.status_code})"]
 
 def is_session_expired_error(error):
     error_str = str(error).lower()
@@ -651,9 +685,26 @@ def relogin():
         return False
 
 def get_date_with_retry(max_retries=3):
+    """
+    Fetch available appointment dates from the API.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        List of available dates from API
+
+    Raises:
+        ValueError: If session expired or API returns invalid response
+    """
     for attempt in range(max_retries):
         try:
-            session = driver.get_cookie("_yatri_session")["value"]
+            # FIXED: Add null check for session cookie
+            cookie = driver.get_cookie("_yatri_session")
+            if not cookie:
+                raise ValueError("Session cookie not found - session may have expired")
+            session = cookie["value"]
+
             script = JS_SCRIPT % (str(DATE_URL), session)
             content = driver.execute_script(script)
             if not content or content.strip() == '':
@@ -670,16 +721,44 @@ def get_date_with_retry(max_retries=3):
                 raise
 
 def get_time_with_retry(date, max_retries=3):
+    """
+    Fetch available time slots for a given date.
+
+    Args:
+        date: Date string in YYYY-MM-DD format
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        First available time slot string, or None if no slots available
+
+    Raises:
+        ValueError: If API returns empty or invalid response after retries
+    """
     for attempt in range(max_retries):
         try:
             time_url = TIME_URL % date
-            session = driver.get_cookie("_yatri_session")["value"]
+
+            # FIXED: Add null check for session cookie
+            cookie = driver.get_cookie("_yatri_session")
+            if not cookie:
+                raise ValueError("Session cookie not found - session may have expired")
+            session = cookie["value"]
+
             script = JS_SCRIPT % (str(time_url), session)
             content = driver.execute_script(script)
             if not content or content.strip() == '':
                 raise ValueError("Empty response from API")
             data = json.loads(content)
-            return data.get("available_times")[-1]
+
+            # FIXED: Validate available_times before accessing
+            available_times = data.get("available_times")
+            if not available_times:
+                # No time slots available - slot may have been taken
+                print(f"[WARNING] No time slots available for {date} - slot may have been taken")
+                return None
+
+            # FIXED: Return FIRST time slot (earliest) instead of last
+            return available_times[0]
         except Exception as e:
              if is_session_expired_error(e) and attempt < max_retries - 1:
                 if relogin(): continue
@@ -687,9 +766,20 @@ def get_time_with_retry(date, max_retries=3):
              else: raise
 
 def get_available_date(dates):
+    """
+    Find the first available date within the configured period.
+
+    Args:
+        dates: List of date objects (dicts with 'date' key or strings)
+
+    Returns:
+        First matching date string, or None if no dates in range
+    """
     def is_in_period(date, PSD, PED):
         new_date = datetime.strptime(date, "%Y-%m-%d")
-        return ( PED > new_date and new_date > PSD )
+        # FIXED: Use inclusive boundaries (>= and <=) instead of strict (> and <)
+        # This ensures dates on PRIOD_START and PRIOD_END are included
+        return PSD <= new_date <= PED
 
     def extract_date(d):
         # Handle both dict format {"date": "..."} and string format "..."
@@ -704,6 +794,7 @@ def get_available_date(dates):
         if date and is_in_period(date, PSD, PED):
             return date
     print(f"\n\nNo available dates between ({PSD.date()}) and ({PED.date()})!")
+    return None  # Explicit return for clarity
 
 def info_logger(file_path, log):
     with open(file_path, "a") as file:
@@ -793,7 +884,26 @@ if __name__ == "__main__":
                     send_notification("Rescheduling Started", date)
                     res = reschedule(date)
                     send_notification(res[0], res[1])
-                    cleanup_and_exit(EXIT_WORK_LIMIT) # Exit after successful schedule? Or continue? Usually stop.
+
+                    # FIXED: Only exit on SUCCESS, retry on failure
+                    if res[0] == "SUCCESS":
+                        msg = f"[BOOKING] Successfully booked: {res[1]}"
+                        print(msg)
+                        info_logger(LOG_FILE_NAME, msg)
+                        cleanup_and_exit(EXIT_WORK_LIMIT)
+                    elif res[0] == "NO_SLOTS":
+                        # Race condition - slot was taken, continue polling
+                        msg = f"[BOOKING] Slot taken before booking: {res[1]}"
+                        print(msg)
+                        info_logger(LOG_FILE_NAME, msg)
+                        # Continue polling for next available slot
+                    else:
+                        # FAIL - log error but continue polling
+                        msg = f"[BOOKING] Booking failed: {res[1]}"
+                        print(msg)
+                        info_logger(LOG_FILE_NAME, msg)
+                        # Short cooldown before retry to avoid hammering on failure
+                        time.sleep(30)
                     
                 # Time Checks
                 t1 = time.time()
