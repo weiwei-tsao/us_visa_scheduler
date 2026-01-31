@@ -25,6 +25,7 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
 from embassy import *
+from proxy_manager import ProxyManager, load_proxy_config
 
 # Exit Codes
 EXIT_WORK_LIMIT = 0
@@ -94,6 +95,11 @@ def load_ban_detection_config(cfg):
     return defaults
 
 BAN_COOLDOWNS = load_ban_detection_config(config)
+
+# Proxy Configuration
+PROXY_ENABLED, PROXY_MANAGER = load_proxy_config(config)
+if PROXY_ENABLED and PROXY_MANAGER:
+    print(f"[PROXY] Loaded {PROXY_MANAGER.total_count} proxies (strategy: {PROXY_MANAGER.rotation_strategy})")
 
 def is_hard_ban_response(http_status, response_text):
     """
@@ -377,7 +383,9 @@ def validate_config(config):
     errors.extend(time_errors)
 
     # Get warnings
-    proxy_enabled = False  # TODO: Check proxy config when implemented
+    proxy_enabled = False
+    if 'PROXY' in config:
+        proxy_enabled = config['PROXY'].getboolean('ENABLED', False)
     sendgrid_configured = False
     telegram_configured = False
     if 'NOTIFICATION' in config:
@@ -412,8 +420,23 @@ JS_SCRIPT = ("var req = new XMLHttpRequest();"
 
 driver = None
 
-def init_driver():
+def init_driver(proxy_manager=None):
+    """
+    Initialize Chrome WebDriver with optional proxy support.
+
+    Args:
+        proxy_manager: Optional ProxyManager instance for proxy support
+    """
     global driver
+
+    # Get proxy arguments if proxy is enabled
+    proxy_args = []
+    if proxy_manager and proxy_manager.has_proxies:
+        proxy = proxy_manager.get_proxy()
+        if proxy:
+            proxy_args = proxy_manager.get_chrome_options_args(proxy)
+            print(f"[PROXY] Using proxy: {proxy['host']}:{proxy['port']}")
+
     if LOCAL_USE:
         # Try undetected-chromedriver first (Stealth Mode)
         if uc:
@@ -421,18 +444,22 @@ def init_driver():
                 options = webdriver.ChromeOptions()
                 if HEADLESS:
                     options.add_argument('--headless')
+                for arg in proxy_args:
+                    options.add_argument(arg)
                 driver = uc.Chrome(options=options)
                 print("Initialized undetected-chromedriver (Stealth Mode)")
                 return
             except Exception as e:
                 print(f"undetected-chromedriver failed: {e}")
                 print("Falling back to standard Selenium...")
-        
+
         # Fallback to standard Selenium
         try:
             options = webdriver.ChromeOptions()
             if HEADLESS:
                 options.add_argument('--headless')
+            for arg in proxy_args:
+                options.add_argument(arg)
             driver = webdriver.Chrome(options=options)
         except Exception as e:
             print(f"Failed to initialize Chrome with default driver: {e}")
@@ -440,12 +467,55 @@ def init_driver():
             options = webdriver.ChromeOptions()
             if HEADLESS:
                 options.add_argument('--headless')
+            for arg in proxy_args:
+                options.add_argument(arg)
             driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
     else:
         options = webdriver.ChromeOptions()
         if HEADLESS:
             options.add_argument('--headless')
+        for arg in proxy_args:
+            options.add_argument(arg)
         driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=options)
+
+
+def rotate_proxy_and_restart():
+    """
+    Rotate to next proxy and restart the driver.
+
+    Returns:
+        True if successfully rotated, False if no more proxies available
+    """
+    global driver, PROXY_MANAGER
+
+    if not PROXY_ENABLED or not PROXY_MANAGER:
+        return False
+
+    if not PROXY_MANAGER.has_proxies:
+        print("[PROXY] No proxies configured")
+        return False
+
+    # Mark current proxy as potentially problematic and rotate
+    current_proxy = PROXY_MANAGER.get_proxy()
+    if current_proxy:
+        print(f"[PROXY] Rotating away from {current_proxy['host']}:{current_proxy['port']}")
+
+    new_proxy = PROXY_MANAGER.rotate()
+    if not new_proxy:
+        print("[PROXY] No more proxies available")
+        return False
+
+    print(f"[PROXY] Switched to {new_proxy['host']}:{new_proxy['port']}")
+
+    # Restart driver with new proxy
+    try:
+        if driver:
+            driver.quit()
+    except Exception:
+        pass
+
+    init_driver(PROXY_MANAGER)
+    return True
 
 
 def send_notification(title, msg):
@@ -634,8 +704,8 @@ def cleanup_and_exit(exit_code):
 if __name__ == "__main__":
     os.makedirs("logs", exist_ok=True)
     LOG_FILE_NAME = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
-    
-    init_driver()
+
+    init_driver(PROXY_MANAGER if PROXY_ENABLED else None)
     
     session_divider = "\n" + "=" * 80 + "\n"
     session_divider += f"NEW SESSION STARTED: {datetime.now()}\n"
@@ -675,6 +745,15 @@ if __name__ == "__main__":
                     )
 
                     if result['action'] == 'exit':
+                        # Before exiting, try rotating proxy if available
+                        if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.rotation_strategy == 'on_ban':
+                            if rotate_proxy_and_restart():
+                                msg = "[PROXY] Rotated proxy after ban detection, restarting session..."
+                                print(msg)
+                                info_logger(LOG_FILE_NAME, msg)
+                                consecutive_empty_count = 0  # Reset counter with new proxy
+                                start_process()
+                                continue
                         cleanup_and_exit(EXIT_BAN)
                     else:
                         # Sleep for graduated cooldown, then continue
