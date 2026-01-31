@@ -37,11 +37,32 @@ TELEGRAM_CHAT_ID =
 
 [TIME]
 ; Time between retries/checks for available dates (seconds)
-; Randomized interval bounds (5 min - 15 min)
-RETRY_TIME_L_BOUND = 300
-RETRY_TIME_U_BOUND = 900
+; Recommended ranges:
+;   Conservative: 111-300 (~18 checks/hour)
+;   Moderate: 60-120 (~40 checks/hour)
+;   Aggressive: 30-60 (~80 checks/hour, proxy recommended)
+RETRY_TIME_L_BOUND = 60
+RETRY_TIME_U_BOUND = 120
 ; Script runtime limit before clean restart (hours)
 ; 0.75 hours = 45 minutes
 WORK_LIMIT_TIME = 0.75
 ; Ban cooldown is handled by the wrapper script (run_visa.sh), but kept here for reference
-BAN_COOLDOWN_TIME = 24
+BAN_COOLDOWN_TIME = 4
+
+[BAN_DETECTION]
+; Graduated ban detection to reduce false positive downtime
+; Empty array response is NOT always a ban - could be:
+;   - Genuine rate limiting (actual ban)
+;   - Embassy has no dates available (false positive)
+;   - Temporary server glitch (false positive)
+
+; Cooldown times in MINUTES for graduated response:
+; 1st empty response: short wait (default: 5 minutes)
+COOLDOWN_FIRST_EMPTY = 5
+; 2nd consecutive empty: medium wait (default: 30 minutes)
+COOLDOWN_SECOND_EMPTY = 30
+; 3rd consecutive empty: long wait (default: 120 minutes / 2 hours)
+COOLDOWN_THIRD_EMPTY = 120
+; 4th+ consecutive OR HTTP 403/429: exit with ban code (default: 240 minutes / 4 hours)
+; This triggers the wrapper script cooldown
+COOLDOWN_HARD_BAN = 240

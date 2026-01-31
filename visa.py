@@ -31,6 +31,14 @@ EXIT_WORK_LIMIT = 0
 EXIT_BAN = 2
 EXIT_NETWORK = 3
 
+# Default ban detection cooldowns (in minutes)
+DEFAULT_BAN_COOLDOWNS = {
+    'first': 5,      # First empty response: 5 minutes
+    'second': 30,    # Second consecutive: 30 minutes
+    'third': 120,    # Third consecutive: 2 hours
+    'hard_ban': 240  # HTTP 403/429: 4 hours
+}
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 
@@ -73,6 +81,116 @@ WORK_LIMIT_TIME = config['TIME'].getfloat('WORK_LIMIT_TIME')
 # CHROMEDRIVER
 LOCAL_USE = config['CHROMEDRIVER'].getboolean('LOCAL_USE')
 HUB_ADDRESS = config['CHROMEDRIVER']['HUB_ADDRESS']
+
+# Ban Detection Config (with defaults for backward compatibility)
+def load_ban_detection_config(cfg):
+    """Load ban detection config with defaults for backward compatibility."""
+    defaults = DEFAULT_BAN_COOLDOWNS.copy()
+    if 'BAN_DETECTION' in cfg:
+        defaults['first'] = cfg['BAN_DETECTION'].getint('COOLDOWN_FIRST_EMPTY', defaults['first'])
+        defaults['second'] = cfg['BAN_DETECTION'].getint('COOLDOWN_SECOND_EMPTY', defaults['second'])
+        defaults['third'] = cfg['BAN_DETECTION'].getint('COOLDOWN_THIRD_EMPTY', defaults['third'])
+        defaults['hard_ban'] = cfg['BAN_DETECTION'].getint('COOLDOWN_HARD_BAN', defaults['hard_ban'])
+    return defaults
+
+BAN_COOLDOWNS = load_ban_detection_config(config)
+
+def is_hard_ban_response(http_status, response_text):
+    """
+    Detect if response indicates a hard ban (Cloudflare block).
+
+    Args:
+        http_status: HTTP status code (403, 429, etc.)
+        response_text: Response body text
+
+    Returns:
+        True if hard ban detected, False otherwise
+    """
+    # HTTP 403 or 429 are definite ban signals
+    if http_status in (403, 429):
+        return True
+
+    # Check for Cloudflare signatures in response
+    ban_signatures = [
+        'you have been blocked',
+        'error 1015',
+        'rate limited',
+        'access denied',
+        'cf-ray'  # Cloudflare ray ID in response
+    ]
+
+    response_lower = response_text.lower()
+    return any(sig in response_lower for sig in ban_signatures)
+
+def get_ban_cooldown(consecutive_empty_count, http_status, cooldown_config, retry_after=None):
+    """
+    Calculate cooldown duration based on ban signals.
+
+    Args:
+        consecutive_empty_count: Number of consecutive empty responses
+        http_status: HTTP status code from response
+        cooldown_config: Dict with cooldown values in minutes
+        retry_after: Optional Retry-After header value in seconds
+
+    Returns:
+        Cooldown duration in seconds, or -1 to signal exit
+    """
+    # HTTP 403/429 = hard ban, use long cooldown
+    if http_status in (403, 429):
+        # If Retry-After header present, use it
+        if retry_after:
+            return retry_after
+        return cooldown_config['hard_ban'] * 60
+
+    # Graduated response based on consecutive empty count
+    if consecutive_empty_count == 1:
+        return cooldown_config['first'] * 60
+    elif consecutive_empty_count == 2:
+        return cooldown_config['second'] * 60
+    elif consecutive_empty_count == 3:
+        return cooldown_config['third'] * 60
+    else:
+        # 4+ consecutive empties = give up, exit
+        return -1
+
+def handle_empty_response(consecutive_count, cooldown_config, log_file=None):
+    """
+    Handle empty response with graduated cooldown.
+
+    Args:
+        consecutive_count: Number of consecutive empty responses
+        cooldown_config: Dict with cooldown values
+        log_file: Optional log file path
+
+    Returns:
+        Dict with 'action' ('sleep' or 'exit') and 'duration' in seconds
+    """
+    cooldown = get_ban_cooldown(
+        consecutive_empty_count=consecutive_count,
+        http_status=200,  # Empty array comes with 200
+        cooldown_config=cooldown_config
+    )
+
+    if cooldown == -1:
+        # Too many consecutive empties, exit
+        msg = f"[BAN] {consecutive_count} consecutive empty responses. Likely banned. Exiting."
+        print(msg)
+        if log_file:
+            info_logger(log_file, msg)
+        send_notification("BAN DETECTED", msg)
+        return {'action': 'exit', 'duration': 0}
+
+    # Log the graduated response
+    msg = f"[BAN] Empty response #{consecutive_count}. Waiting {cooldown // 60} minutes before retry."
+    print(msg)
+    if log_file:
+        info_logger(log_file, msg)
+
+    # Only send notification on 3rd consecutive (warning before potential exit)
+    if consecutive_count >= 3:
+        send_notification("BAN WARNING", f"Multiple empty responses ({consecutive_count}). May be rate limited.")
+
+    return {'action': 'sleep', 'duration': cooldown}
 
 SIGN_IN_LINK = f"https://ais.usvisa-info.com/{EMBASSY}/niv/users/sign_in"
 APPOINTMENT_URL = f"https://ais.usvisa-info.com/{EMBASSY}/niv/schedule/{SCHEDULE_ID}/appointment"
@@ -323,31 +441,44 @@ if __name__ == "__main__":
     t0 = time.time()
     Req_count = 0
     network_retry_count = 0
-    
+    consecutive_empty_count = 0  # Track consecutive empty responses for graduated ban detection
+
     try:
         start_process()
-        
+
         while True:
             Req_count += 1
             msg = "-" * 60 + f"\nRequest count: {Req_count}, Log time: {datetime.today()}\n"
             print(msg)
             info_logger(LOG_FILE_NAME, msg)
-            
+
             try:
                 dates = get_date_with_retry()
-                
+
                 if not isinstance(dates, list):
                     raise ValueError(f"Unexpected response type: {type(dates)} - {dates}")
 
                 network_retry_count = 0 # Reset on success
-                
+
                 if not dates:
-                    # BAN DETECTED
-                    msg = "List is empty, Probably banned! Exiting with code 2."
-                    print(msg)
-                    info_logger(LOG_FILE_NAME, msg)
-                    send_notification("BAN DETECTED", msg)
-                    cleanup_and_exit(EXIT_BAN)
+                    # Empty response - use graduated ban detection
+                    consecutive_empty_count += 1
+
+                    result = handle_empty_response(
+                        consecutive_count=consecutive_empty_count,
+                        cooldown_config=BAN_COOLDOWNS,
+                        log_file=LOG_FILE_NAME
+                    )
+
+                    if result['action'] == 'exit':
+                        cleanup_and_exit(EXIT_BAN)
+                    else:
+                        # Sleep for graduated cooldown, then continue
+                        time.sleep(result['duration'])
+                        continue
+
+                # Got valid dates - reset consecutive empty counter
+                consecutive_empty_count = 0
                 
                 msg = "Available dates:\n"
                 for d in dates:
