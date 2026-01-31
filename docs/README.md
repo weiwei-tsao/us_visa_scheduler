@@ -887,7 +887,8 @@ For issues and feature requests:
 
 | Document | Purpose |
 |----------|---------|
-| [ANTI_DETECTION_AND_RELIABILITY_PLAN.md](ANTI_DETECTION_AND_RELIABILITY_PLAN.md) | Future improvements roadmap: Docker deployment, proxy rotation, fingerprint diversity, ban detection accuracy |
+| [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) | **Active** - Phased implementation plan with test cases for anti-detection improvements |
+| [ANTI_DETECTION_AND_RELIABILITY_PLAN.md](ANTI_DETECTION_AND_RELIABILITY_PLAN.md) | Improvement roadmap: polling optimization, ban detection, proxy rotation |
 | [BOT_ANALYSIS_AND_PLAN.md](BOT_ANALYSIS_AND_PLAN.md) | Technical workflow analysis and hybrid approach documentation |
 | [PM2_DESIGN.md](PM2_DESIGN.md) | Process manager design decisions and session rotation strategy |
 | [RATE_LIMITING.md](RATE_LIMITING.md) | Rate limiting research, frequency analysis, and optimization strategies |
