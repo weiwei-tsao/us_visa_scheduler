@@ -5,6 +5,9 @@ The visa_rescheduler is a bot for US VISA (usvisa-info.com) appointment reschedu
 **New Features**:
 -   **Stealth Mode**: Uses `undetected-chromedriver` to mimic human behavior and avoid detection.
 -   **Headless Support**: Can now run on servers without a display.
+-   **Graduated Ban Detection**: Smart cooldown system (5min → 30min → 2hr) to reduce false positive downtime.
+-   **Configurable Polling**: Adjust check frequency from conservative (18/hr) to aggressive (80/hr).
+-   **Proxy Rotation**: Optional proxy support with automatic rotation on ban detection.
 
 
 ## Prerequisites
@@ -68,14 +71,31 @@ TELEGRAM_CHAT_ID =
 
 [TIME]
 ; Time between retries/checks for available dates (seconds)
-; Randomized interval bounds (5 min - 15 min)
-RETRY_TIME_L_BOUND = 300
-RETRY_TIME_U_BOUND = 900
+; Recommended ranges:
+;   Conservative: 111-300 (~18 checks/hour)
+;   Moderate: 60-120 (~40 checks/hour)
+;   Aggressive: 30-60 (~80 checks/hour, proxy recommended)
+RETRY_TIME_L_BOUND = 60
+RETRY_TIME_U_BOUND = 120
 ; Script runtime limit before clean restart (hours)
-; 0.75 hours = 45 minutes
 WORK_LIMIT_TIME = 0.75
-; Ban cooldown is handled by the wrapper script (run_visa.sh), but kept here for reference
-BAN_COOLDOWN_TIME = 24
+
+[BAN_DETECTION]
+; Graduated ban detection - reduces false positive downtime
+; Cooldown times in MINUTES:
+COOLDOWN_FIRST_EMPTY = 5      ; 1st empty response
+COOLDOWN_SECOND_EMPTY = 30    ; 2nd consecutive
+COOLDOWN_THIRD_EMPTY = 120    ; 3rd consecutive (2 hours)
+COOLDOWN_HARD_BAN = 240       ; HTTP 403/429 (4 hours)
+
+[PROXY]
+; Optional proxy rotation for avoiding IP bans
+ENABLED = False
+PROXY_LIST =
+;   http://user:pass@proxy1.example.com:8080
+;   http://user:pass@proxy2.example.com:8080
+ROTATION_STRATEGY = on_ban    ; round_robin, random, or on_ban
+HEALTH_CHECK = False
 
 ```
 
@@ -166,6 +186,44 @@ This script parses all `log_*.txt` files in the `logs/` directory and outputs:
 - Availability breakdown by month
 - A complete list of all unique dates
 
+
+## Anti-Detection Features
+
+### Graduated Ban Detection
+
+The bot uses smart cooldown to distinguish between real bans and false positives:
+
+| Empty Response # | Cooldown | Reason |
+|------------------|----------|--------|
+| 1st | 5 minutes | May be temporary glitch |
+| 2nd | 30 minutes | Possible rate limiting |
+| 3rd | 2 hours | Likely soft ban |
+| 4th+ or HTTP 403/429 | Exit (4 hours) | Definite ban |
+
+This reduces downtime from false positives - an empty response could mean:
+- Genuine rate limiting (actual ban)
+- Embassy has no dates available
+- Temporary server glitch
+
+### Proxy Rotation
+
+For aggressive polling, configure proxies in `config.ini`:
+
+```ini
+[PROXY]
+ENABLED = True
+PROXY_LIST =
+    http://user:pass@proxy1.example.com:8080
+    http://user:pass@proxy2.example.com:8080
+    socks5://proxy3.example.com:1080
+ROTATION_STRATEGY = on_ban
+HEALTH_CHECK = False
+```
+
+Rotation strategies:
+- `on_ban` - Only rotate when ban is detected (recommended)
+- `round_robin` - Cycle through proxies on each session restart
+- `random` - Random proxy selection
 
 ## PM2 Log Analysis
 
