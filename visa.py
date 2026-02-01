@@ -830,7 +830,16 @@ if __name__ == "__main__":
     Req_count = 0
     network_retry_count = 0
     consecutive_empty_count = 0  # Track consecutive empty responses for graduated ban detection
-    last_notified_earliest_date = None  # Track last notified earliest date to reduce notification noise
+
+    # Load last notified earliest date from file (persists across restarts)
+    EARLIEST_DATE_FILE = os.path.join("logs", ".last_earliest_date")
+    last_notified_earliest_date = None
+    if os.path.exists(EARLIEST_DATE_FILE):
+        try:
+            with open(EARLIEST_DATE_FILE, "r") as f:
+                last_notified_earliest_date = f.read().strip() or None
+        except Exception:
+            pass
 
     try:
         start_process()
@@ -921,6 +930,12 @@ if __name__ == "__main__":
                     earliest = dates[0].get('date') if isinstance(dates[0], dict) else dates[0]
                     if earliest != last_notified_earliest_date:
                         last_notified_earliest_date = earliest
+                        # Persist to file so it survives restarts
+                        try:
+                            with open(EARLIEST_DATE_FILE, "w") as f:
+                                f.write(earliest)
+                        except Exception:
+                            pass
                         dates_msg = f"{len(dates)} dates available. Earliest: {earliest}. Not in your target range ({PRIOD_START} to {PRIOD_END})."
                         send_notification("DATES AVAILABLE", dates_msg)
 
