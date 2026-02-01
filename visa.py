@@ -830,6 +830,7 @@ if __name__ == "__main__":
     Req_count = 0
     network_retry_count = 0
     consecutive_empty_count = 0  # Track consecutive empty responses for graduated ban detection
+    last_notified_earliest_date = None  # Track last notified earliest date to reduce notification noise
 
     try:
         start_process()
@@ -916,10 +917,12 @@ if __name__ == "__main__":
                         # Short cooldown before retry to avoid hammering on failure
                         time.sleep(30)
                 else:
-                    # Dates available but not in target range - send summary notification
+                    # Dates available but not in target range - only notify if earliest date changed
                     earliest = dates[0].get('date') if isinstance(dates[0], dict) else dates[0]
-                    dates_msg = f"{len(dates)} dates available. Earliest: {earliest}. Not in your target range ({PRIOD_START} to {PRIOD_END})."
-                    send_notification("DATES AVAILABLE", dates_msg)
+                    if earliest != last_notified_earliest_date:
+                        last_notified_earliest_date = earliest
+                        dates_msg = f"{len(dates)} dates available. Earliest: {earliest}. Not in your target range ({PRIOD_START} to {PRIOD_END})."
+                        send_notification("DATES AVAILABLE", dates_msg)
 
                 # Time Checks
                 t1 = time.time()
