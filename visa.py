@@ -820,7 +820,12 @@ if __name__ == "__main__":
     session_divider += f"NEW SESSION STARTED: {datetime.now()}\n"
     session_divider += "=" * 80 + "\n"
     info_logger(LOG_FILE_NAME, session_divider)
-    
+
+    # Startup notification
+    startup_msg = f"Session started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.\n"
+    startup_msg += f"Monitoring for dates between {PRIOD_START} and {PRIOD_END}."
+    send_notification("SCHEDULER STARTED", startup_msg)
+
     t0 = time.time()
     Req_count = 0
     network_retry_count = 0
@@ -834,6 +839,12 @@ if __name__ == "__main__":
             msg = "-" * 60 + f"\nRequest count: {Req_count}, Log time: {datetime.today()}\n"
             print(msg)
             info_logger(LOG_FILE_NAME, msg)
+
+            # Heartbeat notification every 20 requests
+            if Req_count % 20 == 0:
+                running_mins = (time.time() - t0) / minute
+                heartbeat_msg = f"Still running. {Req_count} checks completed. Running for {running_mins:.0f} minutes."
+                send_notification("HEARTBEAT", heartbeat_msg)
 
             try:
                 dates = get_date_with_retry()
@@ -904,7 +915,12 @@ if __name__ == "__main__":
                         info_logger(LOG_FILE_NAME, msg)
                         # Short cooldown before retry to avoid hammering on failure
                         time.sleep(30)
-                    
+                else:
+                    # Dates available but not in target range - send summary notification
+                    earliest = dates[0].get('date') if isinstance(dates[0], dict) else dates[0]
+                    dates_msg = f"{len(dates)} dates available. Earliest: {earliest}. Not in your target range ({PRIOD_START} to {PRIOD_END})."
+                    send_notification("DATES AVAILABLE", dates_msg)
+
                 # Time Checks
                 t1 = time.time()
                 total_time = t1 - t0
@@ -917,6 +933,7 @@ if __name__ == "__main__":
                     msg = f"Work limit reached ({WORK_LIMIT_TIME}h). Exiting for restart."
                     print(msg)
                     info_logger(LOG_FILE_NAME, msg)
+                    send_notification("WORK LIMIT", f"{WORK_LIMIT_TIME}h limit reached. Restarting immediately.")
                     cleanup_and_exit(EXIT_WORK_LIMIT)
                 
                 # Randomized Wait
@@ -934,9 +951,11 @@ if __name__ == "__main__":
                      msg = "Max network retries exceeded. Exiting with code 3."
                      print(msg)
                      info_logger(LOG_FILE_NAME, msg)
+                     send_notification("NETWORK ERROR", "Max retries exceeded. Script exiting. Will restart in 5 minutes.")
                      cleanup_and_exit(EXIT_NETWORK)
                 time.sleep(60) # Short sleep before loop retry
                 
     except Exception as e:
         print(f"Top level exception: {e}")
+        send_notification("NETWORK ERROR", f"Top level exception: {e}. Script exiting. Will restart in 5 minutes.")
         cleanup_and_exit(EXIT_NETWORK)
