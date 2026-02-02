@@ -875,8 +875,8 @@ if __name__ == "__main__":
                     )
 
                     if result['action'] == 'exit':
-                        # Before exiting, try rotating proxy if available
-                        if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.rotation_strategy == 'on_ban':
+                        # Before exiting, try rotating proxy if available (all strategies rotate on ban)
+                        if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
                             if rotate_proxy_and_restart():
                                 msg = "[PROXY] Rotated proxy after ban detection, restarting session..."
                                 print(msg)
@@ -968,9 +968,20 @@ if __name__ == "__main__":
                 print(f"Error in loop: {e}")
                 network_retry_count += 1
                 if network_retry_count >= 3:
-                     msg = "Max network retries exceeded. Exiting with code 3."
+                     msg = "Max network retries exceeded."
                      print(msg)
                      info_logger(LOG_FILE_NAME, msg)
+                     # Try rotating proxy before giving up
+                     if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
+                         if rotate_proxy_and_restart():
+                             msg = "[PROXY] Rotated proxy after network errors, restarting session..."
+                             print(msg)
+                             info_logger(LOG_FILE_NAME, msg)
+                             network_retry_count = 0  # Reset counter with new proxy
+                             consecutive_empty_count = 0
+                             start_process()
+                             continue
+                     # No proxy available or rotation failed, exit
                      send_notification("NETWORK ERROR", "Max retries exceeded. Script exiting. Will restart in 5 minutes.")
                      cleanup_and_exit(EXIT_NETWORK)
                 time.sleep(60) # Short sleep before loop retry
