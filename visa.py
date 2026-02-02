@@ -926,9 +926,11 @@ if __name__ == "__main__":
                         # Short cooldown before retry to avoid hammering on failure
                         time.sleep(30)
                 else:
-                    # Dates available but not in target range - only notify if earliest date changed
+                    # Dates available but not in target range - only notify if date moved EARLIER
+                    # Skip notification if date moved later (slots taken - not interesting)
                     earliest = dates[0].get('date') if isinstance(dates[0], dict) else dates[0]
-                    if earliest != last_notified_earliest_date:
+                    should_notify = (last_notified_earliest_date is None or earliest < last_notified_earliest_date)
+                    if should_notify:
                         last_notified_earliest_date = earliest
                         # Persist to file so it survives restarts
                         try:
