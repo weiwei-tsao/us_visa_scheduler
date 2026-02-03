@@ -833,6 +833,16 @@ if __name__ == "__main__":
         "headless": HEADLESS
     })
 
+    # Apply startup proxy selection based on strategy
+    if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
+        if PROXY_MANAGER.rotation_strategy == 'random':
+            # Random strategy: randomly select a proxy at startup
+            import random as rand_module
+            PROXY_MANAGER.current_index = rand_module.randint(0, len(PROXY_MANAGER.proxies) - 1)
+            proxy = PROXY_MANAGER.get_proxy()
+            print(f"[PROXY] Random strategy: selected proxy {PROXY_MANAGER.current_index + 1}/{len(PROXY_MANAGER.proxies)}")
+        # round_robin and on_ban: start from proxy1 (index 0), no action needed
+
     init_driver(PROXY_MANAGER if PROXY_ENABLED else None)
 
     # Log proxy configuration if enabled

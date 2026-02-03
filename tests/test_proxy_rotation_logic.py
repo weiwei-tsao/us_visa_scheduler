@@ -183,5 +183,71 @@ class TestNetworkRetryRotation:
             pass  # No rotation triggered
 
 
+class TestStartupProxySelection:
+    """Test proxy selection at startup based on strategy."""
+
+    def test_random_strategy_selects_random_proxy_at_startup(self):
+        """Random strategy should select a random proxy at startup."""
+        import random
+
+        # Create manager with 5 proxies
+        manager = MockProxyManager(rotation_strategy='random')
+        manager.proxies = [
+            {'host': f'proxy{i}.example.com', 'port': 8080}
+            for i in range(1, 6)
+        ]
+
+        # Simulate startup logic for random strategy
+        if manager.rotation_strategy == 'random':
+            random.seed(42)  # For reproducibility
+            manager.current_index = random.randint(0, len(manager.proxies) - 1)
+
+        # Should have selected a valid index
+        assert 0 <= manager.current_index < len(manager.proxies)
+
+    def test_random_strategy_varies_selection(self):
+        """Random strategy should produce different selections over multiple runs."""
+        import random
+
+        selections = set()
+        for seed in range(10):
+            manager = MockProxyManager(rotation_strategy='random')
+            manager.proxies = [
+                {'host': f'proxy{i}.example.com', 'port': 8080}
+                for i in range(1, 6)
+            ]
+            random.seed(seed)
+            manager.current_index = random.randint(0, len(manager.proxies) - 1)
+            selections.add(manager.current_index)
+
+        # With 10 different seeds and 5 proxies, we should have multiple different selections
+        assert len(selections) > 1, "Random selection should vary"
+
+    def test_round_robin_strategy_starts_from_first_proxy(self):
+        """Round robin strategy should start from proxy1 (index 0) at startup."""
+        manager = MockProxyManager(rotation_strategy='round_robin')
+
+        # round_robin starts from index 0 (no action needed at startup)
+        assert manager.current_index == 0
+        assert manager.get_proxy()['host'] == 'proxy1.example.com'
+
+    def test_on_ban_strategy_starts_from_first_proxy(self):
+        """On ban strategy should start from proxy1 (index 0) at startup."""
+        manager = MockProxyManager(rotation_strategy='on_ban')
+
+        # on_ban starts from index 0 (no action needed at startup)
+        assert manager.current_index == 0
+        assert manager.get_proxy()['host'] == 'proxy1.example.com'
+
+    def test_round_robin_and_on_ban_same_startup_behavior(self):
+        """Round robin and on_ban should have same startup behavior (start from proxy1)."""
+        manager_rr = MockProxyManager(rotation_strategy='round_robin')
+        manager_ban = MockProxyManager(rotation_strategy='on_ban')
+
+        # Both start from index 0
+        assert manager_rr.current_index == manager_ban.current_index == 0
+        assert manager_rr.get_proxy()['host'] == manager_ban.get_proxy()['host']
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
