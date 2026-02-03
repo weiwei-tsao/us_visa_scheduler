@@ -558,7 +558,7 @@ def send_notification(title, msg):
             "parse_mode": "HTML"
         }
         try:
-            requests.post(telegram_url, data=telegram_data)
+            requests.post(telegram_url, data=telegram_data, timeout=5)
         except Exception as e:
             print(f"Telegram error: {str(e)}")
 
@@ -903,7 +903,38 @@ if __name__ == "__main__":
                 date = get_available_date(dates)
                 if date:
                     send_notification("Rescheduling Started", date)
-                    res = reschedule(date)
+                    
+                    # 关键：为 reschedule 添加独立的快速重试逻辑
+                    max_reschedule_retries = 3
+                    res = None
+                    for attempt in range(max_reschedule_retries):
+                        try:
+                            res = reschedule(date)
+                            # 正常返回，跳出重试循环
+                            break
+                        except Exception as e:
+                            msg = f"[BOOKING] Reschedule attempt {attempt+1} failed with exception: {e}"
+                            print(msg)
+                            info_logger(LOG_FILE_NAME, msg)
+                            
+                            if attempt < max_reschedule_retries - 1:
+                                # 还有重试机会：立即重新登录，然后重试
+                                msg = "[BOOKING] Attempting immediate session recovery..."
+                                print(msg)
+                                try:
+                                    start_process()  # 重新登录
+                                    time.sleep(2)    # 极短暂等待，确保 session 稳定
+                                    continue         # 立即重试
+                                except Exception as login_err:
+                                    msg = f"[BOOKING] Session recovery failed: {login_err}"
+                                    print(msg)
+                            
+                            # 重试耗尽，返回失败
+                            res = ["FAIL", f"Exception after {max_reschedule_retries} attempts: {e}"]
+                    
+                    if res is None:
+                        res = ["FAIL", "Unknown error during rescheduling"]
+
                     send_notification(res[0], res[1])
 
                     # FIXED: Only exit on SUCCESS, retry on failure
