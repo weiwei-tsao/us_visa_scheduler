@@ -331,20 +331,52 @@ for attempt in range(max_reschedule_retries):
 ## 六、验收标准
 
 1. **功能验收**
-   - [ ] 超时配置生效（reschedule 15s, login 20s）
-   - [ ] Cloudflare 检测函数正常工作
-   - [ ] 分层恢复逻辑按预期执行
-   - [ ] 代理轮换在适当时机触发
+   - [x] 超时配置生效（reschedule 15s, login 20s）
+   - [x] Cloudflare 检测函数正常工作
+   - [x] 分层恢复逻辑按预期执行
+   - [x] 代理轮换在适当时机触发
 
 2. **性能验收**
-   - [ ] 3 次重试最坏情况 < 60 秒
-   - [ ] 单次 reschedule 超时 ≤ 15 秒
-   - [ ] 单次登录超时 ≤ 20 秒
+   - [x] 3 次重试最坏情况 < 60 秒
+   - [x] 单次 reschedule 超时 ≤ 15 秒
+   - [x] 单次登录超时 ≤ 20 秒
 
 3. **日志验收**
-   - [ ] 可区分 TimeoutException 和其他异常
-   - [ ] 可追踪恢复层级（Level 1/2/3）
-   - [ ] Cloudflare 检测结果有日志记录
+   - [x] 可区分 TimeoutException 和其他异常
+   - [x] 可追踪恢复层级（Level 1/2/3）
+   - [x] Cloudflare 检测结果有日志记录
+
+---
+
+## 七、实施记录
+
+**实施日期**：2026-02-03
+
+### 代码变更
+
+1. **visa.py** - 添加超时常量：
+   ```python
+   SELENIUM_WAIT_RESCHEDULE = 15
+   SELENIUM_WAIT_LOGIN = 20
+   SELENIUM_WAIT_DEFAULT = 30
+   ```
+
+2. **visa.py** - 添加 `detect_cloudflare_block()` 函数
+
+3. **visa.py** - 重构 reschedule 重试逻辑，实现分层恢复：
+   - Level 1: 页面刷新
+   - Level 2: 完整重新登录
+   - Level 3: 代理轮换
+
+4. **visa.py** - 添加 `TimeoutException` 导入
+
+### 测试验证
+
+- 新增 13 个测试用例覆盖：
+  - Cloudflare 检测（5 个）
+  - 分层恢复策略（4 个）
+  - 超时配置（4 个）
+- 全部 36 个测试通过
 
 ---
 

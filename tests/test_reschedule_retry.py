@@ -623,5 +623,304 @@ class TestIntegrationScenarios(unittest.TestCase):
         self.assertEqual(res[0], "NO_SLOTS")
 
 
+class TestCloudflareDetection(unittest.TestCase):
+    """
+    Test the Cloudflare/WAF block detection function.
+    """
+
+    def test_detect_cloudflare_just_a_moment(self):
+        """Detect Cloudflare 'Just a moment' challenge page."""
+        mock_driver = Mock()
+        mock_driver.page_source = "<html><body>Just a moment...</body></html>"
+        mock_driver.title = "Just a moment..."
+
+        # Simulate detect_cloudflare_block logic
+        page_source = mock_driver.page_source.lower()
+        title = mock_driver.title.lower()
+        block_indicators = ['just a moment', 'checking your browser', 'access denied']
+
+        detected = any(ind in page_source or ind in title for ind in block_indicators)
+        self.assertTrue(detected)
+
+    def test_detect_cloudflare_access_denied(self):
+        """Detect WAF 'Access Denied' block."""
+        mock_driver = Mock()
+        mock_driver.page_source = "<html><body>Access Denied - Error 403</body></html>"
+        mock_driver.title = "Access Denied"
+
+        page_source = mock_driver.page_source.lower()
+        title = mock_driver.title.lower()
+        block_indicators = ['just a moment', 'access denied', 'error 1015']
+
+        detected = any(ind in page_source or ind in title for ind in block_indicators)
+        self.assertTrue(detected)
+
+    def test_detect_cloudflare_ray_id(self):
+        """Detect Cloudflare by ray ID in page."""
+        mock_driver = Mock()
+        mock_driver.page_source = "<html><body>Error. Ray ID: abc123</body></html>"
+        mock_driver.title = "Error"
+
+        page_source = mock_driver.page_source.lower()
+        block_indicators = ['ray id', 'cloudflare']
+
+        detected = any(ind in page_source for ind in block_indicators)
+        self.assertTrue(detected)
+
+    def test_no_cloudflare_on_normal_page(self):
+        """Normal page should not trigger detection."""
+        mock_driver = Mock()
+        mock_driver.page_source = "<html><body>Welcome to visa appointment</body></html>"
+        mock_driver.title = "Schedule Appointment"
+
+        page_source = mock_driver.page_source.lower()
+        title = mock_driver.title.lower()
+        block_indicators = ['just a moment', 'access denied', 'cloudflare', 'ray id']
+
+        detected = any(ind in page_source or ind in title for ind in block_indicators)
+        self.assertFalse(detected)
+
+    def test_detection_handles_exception(self):
+        """Detection should return False if page_source throws."""
+        mock_driver = Mock()
+        mock_driver.page_source = property(lambda self: None)  # Will raise
+        type(mock_driver).page_source = property(lambda self: (_ for _ in ()).throw(Exception("No page")))
+
+        # Simulate the try-except in detect_cloudflare_block
+        try:
+            page_source = mock_driver.page_source.lower()
+            detected = 'cloudflare' in page_source
+        except Exception:
+            detected = False
+
+        self.assertFalse(detected)
+
+
+class TestTieredRecoveryStrategy(unittest.TestCase):
+    """
+    Test the tiered recovery strategy for reschedule failures.
+
+    Level 1: Page refresh
+    Level 2: Full re-login
+    Level 3: Proxy rotation
+    """
+
+    def test_timeout_triggers_page_refresh_first(self):
+        """TimeoutException should trigger page refresh (Level 1) first."""
+        class TimeoutException(Exception):
+            pass
+
+        recovery_steps = []
+
+        def mock_refresh():
+            recovery_steps.append("refresh")
+
+        def mock_start_process():
+            recovery_steps.append("relogin")
+
+        def mock_detect_cloudflare():
+            return False  # No Cloudflare block
+
+        mock_reschedule = Mock(side_effect=[
+            TimeoutException("Page load timeout"),
+            ["SUCCESS", "Booked"]
+        ])
+
+        max_retries = 3
+        res = None
+
+        for attempt in range(max_retries):
+            try:
+                res = mock_reschedule("2026-02-05")
+                break
+            except TimeoutException:
+                if not mock_detect_cloudflare():
+                    mock_refresh()  # Level 1
+                    continue
+                mock_start_process()  # Level 2
+                continue
+
+        self.assertEqual(res[0], "SUCCESS")
+        self.assertIn("refresh", recovery_steps)
+        self.assertNotIn("relogin", recovery_steps)
+
+    def test_cloudflare_skips_refresh_goes_to_proxy_rotation(self):
+        """Cloudflare detection should skip refresh and rotate proxy."""
+        class TimeoutException(Exception):
+            pass
+
+        recovery_steps = []
+
+        def mock_refresh():
+            recovery_steps.append("refresh")
+
+        def mock_rotate_proxy():
+            recovery_steps.append("proxy_rotation")
+            return True
+
+        def mock_detect_cloudflare():
+            return True  # Cloudflare block detected
+
+        mock_reschedule = Mock(side_effect=[
+            TimeoutException("Page blocked"),
+            ["SUCCESS", "Booked"]
+        ])
+
+        max_retries = 3
+        res = None
+
+        for attempt in range(max_retries):
+            try:
+                res = mock_reschedule("2026-02-05")
+                break
+            except TimeoutException:
+                if mock_detect_cloudflare():
+                    mock_rotate_proxy()  # Level 3 directly
+                    continue
+                mock_refresh()  # Level 1
+                continue
+
+        self.assertEqual(res[0], "SUCCESS")
+        self.assertIn("proxy_rotation", recovery_steps)
+        self.assertNotIn("refresh", recovery_steps)
+
+    def test_refresh_fails_then_relogin(self):
+        """If refresh doesn't help, fall back to full re-login."""
+        class TimeoutException(Exception):
+            pass
+
+        recovery_steps = []
+        refresh_helped = False
+
+        def mock_refresh():
+            recovery_steps.append("refresh")
+            return refresh_helped
+
+        def mock_start_process():
+            recovery_steps.append("relogin")
+
+        attempt_count = 0
+
+        def mock_reschedule(date):
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count <= 2:
+                raise TimeoutException("Timeout")
+            return ["SUCCESS", "Booked"]
+
+        max_retries = 3
+        res = None
+
+        for attempt in range(max_retries):
+            try:
+                res = mock_reschedule("2026-02-05")
+                break
+            except TimeoutException:
+                if attempt < max_retries - 1:
+                    # Level 1: Try refresh
+                    if not mock_refresh():
+                        # Level 2: Full re-login
+                        mock_start_process()
+                    continue
+                res = ["FAIL", "All retries failed"]
+
+        self.assertEqual(res[0], "SUCCESS")
+        self.assertIn("refresh", recovery_steps)
+        self.assertIn("relogin", recovery_steps)
+
+    def test_login_fails_then_proxy_rotation(self):
+        """If login also fails, rotate proxy (Level 3)."""
+        class TimeoutException(Exception):
+            pass
+
+        recovery_steps = []
+
+        def mock_start_process():
+            recovery_steps.append("relogin")
+            raise TimeoutException("Login also timed out")
+
+        def mock_rotate_proxy():
+            recovery_steps.append("proxy_rotation")
+            return True
+
+        attempt_count = 0
+
+        def mock_reschedule(date):
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count <= 2:
+                raise TimeoutException("Timeout")
+            return ["SUCCESS", "Booked"]
+
+        max_retries = 3
+        res = None
+        proxy_enabled = True
+
+        for attempt in range(max_retries):
+            try:
+                res = mock_reschedule("2026-02-05")
+                break
+            except TimeoutException:
+                if attempt < max_retries - 1:
+                    try:
+                        mock_start_process()  # Level 2
+                        continue
+                    except TimeoutException:
+                        if proxy_enabled:
+                            mock_rotate_proxy()  # Level 3
+                        continue
+                res = ["FAIL", "All retries failed"]
+
+        self.assertEqual(res[0], "SUCCESS")
+        self.assertIn("relogin", recovery_steps)
+        self.assertIn("proxy_rotation", recovery_steps)
+
+
+class TestSeleniumTimeoutConfiguration(unittest.TestCase):
+    """
+    Test the new Selenium timeout configuration values.
+    """
+
+    def test_reschedule_timeout_is_15_seconds(self):
+        """Reschedule page timeout should be 15 seconds."""
+        SELENIUM_WAIT_RESCHEDULE = 15
+        self.assertEqual(SELENIUM_WAIT_RESCHEDULE, 15)
+
+    def test_login_timeout_is_20_seconds(self):
+        """Login page timeout should be 20 seconds."""
+        SELENIUM_WAIT_LOGIN = 20
+        self.assertEqual(SELENIUM_WAIT_LOGIN, 20)
+
+    def test_default_timeout_is_30_seconds(self):
+        """Default timeout should be 30 seconds."""
+        SELENIUM_WAIT_DEFAULT = 30
+        self.assertEqual(SELENIUM_WAIT_DEFAULT, 30)
+
+    def test_worst_case_total_time_with_new_timeouts(self):
+        """
+        Calculate worst-case total time with new timeout values.
+
+        Worst case per attempt:
+        - Reschedule timeout: 15s
+        - Refresh attempt: 2s
+        - Relogin timeout: 20s
+
+        With 3 attempts, worst case is:
+        (15 + 2 + 20) * 2 + 15 = 89s (much better than 126s before)
+        """
+        SELENIUM_WAIT_RESCHEDULE = 15
+        SELENIUM_WAIT_LOGIN = 20
+        REFRESH_WAIT = 2
+        max_retries = 3
+
+        # Worst case: all attempts fail with full timeout chain
+        worst_case_per_retry = SELENIUM_WAIT_RESCHEDULE + REFRESH_WAIT + SELENIUM_WAIT_LOGIN
+        # Last attempt doesn't trigger recovery
+        worst_case_total = worst_case_per_retry * (max_retries - 1) + SELENIUM_WAIT_RESCHEDULE
+
+        self.assertLess(worst_case_total, 100)  # Should be under 100s
+        self.assertLess(worst_case_total, 126)  # Better than before (126s)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -12,7 +12,7 @@ from logger import init_logger, get_logger, LogCategory, OperationType
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import WebDriverException, TimeoutException
 try:
     import undetected_chromedriver as uc
 except ImportError:
@@ -100,6 +100,12 @@ BAN_COOLDOWNS = load_ban_detection_config(config)
 
 # Proxy Configuration
 PROXY_ENABLED, PROXY_MANAGER = load_proxy_config(config)
+
+# Selenium Wait Timeouts (seconds)
+# Shorter timeouts enable faster failure detection and retry in time-sensitive operations
+SELENIUM_WAIT_RESCHEDULE = 15  # Critical path: reschedule page load
+SELENIUM_WAIT_LOGIN = 20       # Login flow
+SELENIUM_WAIT_DEFAULT = 30     # General operations
 
 def is_hard_ban_response(http_status, response_text):
     """
@@ -534,6 +540,44 @@ def rotate_proxy_and_restart():
     return True
 
 
+def detect_cloudflare_block():
+    """
+    Detect if current page shows Cloudflare challenge or WAF block.
+
+    This function checks the page source and title for indicators that
+    the request has been blocked or is awaiting challenge completion.
+
+    Returns:
+        bool: True if block/challenge detected, False otherwise
+    """
+    try:
+        page_source = driver.page_source.lower()
+        title = driver.title.lower()
+
+        # Cloudflare and common WAF block indicators
+        block_indicators = [
+            'just a moment',           # Cloudflare JS challenge
+            'checking your browser',   # Cloudflare browser check
+            'access denied',           # WAF block
+            'ray id',                  # Cloudflare signature
+            'cloudflare',              # Direct Cloudflare mention
+            'ddos protection',         # DDoS protection page
+            'please wait',             # Generic challenge page
+            'verify you are human',    # CAPTCHA challenge
+            'attention required',      # Cloudflare attention page
+            'error 1015',              # Cloudflare rate limit
+            'you have been blocked',   # Explicit block message
+        ]
+
+        for indicator in block_indicators:
+            if indicator in page_source or indicator in title:
+                return True
+        return False
+    except Exception:
+        # Cannot access page content, conservatively return False
+        return False
+
+
 def send_notification(title, msg):
     slog = get_logger()
     if SENDGRID_API_KEY:
@@ -589,13 +633,13 @@ def start_process():
     slog = get_logger()
     driver.get(SIGN_IN_LINK)
     time.sleep(STEP_TIME)
-    Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "commit")))
+    Wait(driver, SELENIUM_WAIT_LOGIN).until(EC.presence_of_element_located((By.NAME, "commit")))
     auto_action("Click bounce", "xpath", '//a[@class="down-arrow bounce"]', "click", "", STEP_TIME)
     auto_action("Email", "id", "user_email", "send", USERNAME, STEP_TIME)
     auto_action("Password", "id", "user_password", "send", PASSWORD, STEP_TIME)
     auto_action("Privacy", "class", "icheckbox", "click", "", STEP_TIME)
     auto_action("Enter Panel", "name", "commit", "click", "", STEP_TIME)
-    Wait(driver, 60).until(EC.presence_of_element_located((By.XPATH, "//a[contains(text(), '" + REGEX_CONTINUE + "')]")))
+    Wait(driver, SELENIUM_WAIT_LOGIN).until(EC.presence_of_element_located((By.XPATH, "//a[contains(text(), '" + REGEX_CONTINUE + "')]")))
     slog.login_success()
 
 def reschedule(date):
@@ -615,7 +659,7 @@ def reschedule(date):
 
     driver.get(APPOINTMENT_URL)
     time.sleep(STEP_TIME)
-    Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "authenticity_token")))
+    Wait(driver, SELENIUM_WAIT_RESCHEDULE).until(EC.presence_of_element_located((By.NAME, "authenticity_token")))
 
     # FIXED: Add null check for session cookie
     cookie = driver.get_cookie("_yatri_session")
@@ -925,19 +969,71 @@ if __name__ == "__main__":
                     slog.reschedule_start(date)
                     send_notification("Rescheduling Started", date)
 
-                    # Fast retry logic for reschedule
+                    # Fast retry logic for reschedule with tiered recovery
+                    # Level 1: Page refresh (fastest)
+                    # Level 2: Full re-login
+                    # Level 3: Proxy rotation (if Cloudflare detected)
                     max_reschedule_retries = 3
                     res = None
+                    cloudflare_detected = False
+
                     for attempt in range(max_reschedule_retries):
                         try:
                             slog.reschedule_attempt(date, attempt + 1, max_reschedule_retries)
                             res = reschedule(date)
                             break
+
+                        except TimeoutException as e:
+                            slog.reschedule_exception(date, e, attempt + 1, max_reschedule_retries)
+
+                            # Check for Cloudflare/WAF block
+                            if detect_cloudflare_block():
+                                slog.warning(LogCategory.PROXY, "Cloudflare/WAF block detected during reschedule")
+                                cloudflare_detected = True
+
+                                # Level 3: Rotate proxy immediately on block detection
+                                if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
+                                    if rotate_proxy_and_restart():
+                                        slog.info(LogCategory.PROXY, "Rotated proxy due to block detection")
+                                        cloudflare_detected = False
+                                        time.sleep(2)
+                                        continue
+
+                            if attempt < max_reschedule_retries - 1:
+                                # Level 1: Try page refresh first (if no Cloudflare block)
+                                if not cloudflare_detected:
+                                    slog.info(LogCategory.SESSION, "Attempting page refresh (Level 1 recovery)")
+                                    try:
+                                        driver.refresh()
+                                        time.sleep(2)
+                                        # Check if refresh resolved the issue
+                                        if not detect_cloudflare_block():
+                                            continue
+                                    except Exception:
+                                        pass
+
+                                # Level 2: Full re-login
+                                slog.relogin_attempt(attempt + 1, max_reschedule_retries)
+                                try:
+                                    start_process()
+                                    time.sleep(2)
+                                    continue
+                                except Exception as login_err:
+                                    slog.login_failed(login_err, attempt + 1, max_reschedule_retries)
+
+                                    # Level 3: Login also failed, try rotating proxy
+                                    if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
+                                        if rotate_proxy_and_restart():
+                                            slog.info(LogCategory.PROXY, "Rotated proxy after login failure")
+                                            continue
+
+                            res = ["FAIL", f"TimeoutException after {max_reschedule_retries} attempts: {e}"]
+
                         except Exception as e:
+                            # Non-timeout exceptions: use standard recovery
                             slog.reschedule_exception(date, e, attempt + 1, max_reschedule_retries)
 
                             if attempt < max_reschedule_retries - 1:
-                                # Immediate session recovery
                                 slog.relogin_attempt(attempt + 1, max_reschedule_retries)
                                 try:
                                     start_process()

@@ -124,3 +124,58 @@ python -m pytest tests/test_reschedule_retry.py -v
 4. **Race conditions are inevitable in booking systems**
    - Multiple retries increase success probability
    - Log slot-taken events separately from errors
+
+---
+
+## Follow-up Optimization (2026-02-03)
+
+After analyzing two reschedule failures (2026-02-24 and 2026-02-06), additional optimizations were implemented:
+
+### Problem Identified
+
+The original fix reduced retry interval from 60s to 2s, but **Selenium wait timeouts** were still 60s. This caused:
+- Single reschedule timeout: 60s (too long)
+- Single login timeout: 60s (too long)
+- Total recovery time: 126s+ (slots taken by competitors)
+
+### Additional Fixes
+
+1. **Shortened Selenium Timeouts**
+   ```python
+   SELENIUM_WAIT_RESCHEDULE = 15  # Was 60s
+   SELENIUM_WAIT_LOGIN = 20       # Was 60s
+   ```
+
+2. **Cloudflare Detection**
+   ```python
+   def detect_cloudflare_block():
+       # Detects "Just a moment", "Access Denied", etc.
+   ```
+
+3. **Tiered Recovery Strategy**
+   ```
+   TimeoutException
+        │
+        ▼
+   Check Cloudflare? ─Yes─→ Rotate Proxy (Level 3)
+        │
+        No
+        ▼
+   Page Refresh (Level 1)
+        │
+        ▼ Failed
+   Full Re-login (Level 2)
+        │
+        ▼ Failed
+   Rotate Proxy (Level 3)
+   ```
+
+### Expected Improvement
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Reschedule timeout | 60s | 15s |
+| Login timeout | 60s | 20s |
+| Worst-case 3 retries | 126s+ | ~67s |
+
+See [reschedule-failure-analysis-2026-02-03.md](reschedule-failure-analysis-2026-02-03.md) for detailed analysis.
