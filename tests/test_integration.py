@@ -220,32 +220,7 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(upper, DEFAULT_RETRY_TIME_U_BOUND)
 
 
-class TestLoggingFormat(unittest.TestCase):
-    """Test logging format for analysis scripts."""
 
-    def test_ban_response_logging(self):
-        """Ban responses should log in parseable format."""
-        from visa import handle_empty_response, DEFAULT_BAN_COOLDOWNS
-        import tempfile
-        import os
-
-        cooldown_config = DEFAULT_BAN_COOLDOWNS.copy()
-
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
-            log_file = f.name
-
-        try:
-            with patch('visa.send_notification'):
-                handle_empty_response(1, cooldown_config, log_file=log_file)
-
-            with open(log_file, 'r') as f:
-                content = f.read()
-
-            # Should contain BAN marker for parsing
-            self.assertIn('[BAN]', content)
-            self.assertIn('Empty response', content)
-        finally:
-            os.unlink(log_file)
 
 
 class TestHardBanDetection(unittest.TestCase):

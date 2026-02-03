@@ -267,10 +267,13 @@ class TestGraduatedBanResponse(unittest.TestCase):
         self.sleep_patcher.stop()
 
     @patch('visa.send_notification')
-    @patch('visa.info_logger')
-    def test_no_notification_on_first_empty(self, mock_logger, mock_notify):
+    @patch('visa.get_logger')
+    def test_no_notification_on_first_empty(self, mock_get_logger, mock_notify):
         """First empty response should NOT send ban notification."""
         from visa import handle_empty_response
+
+        mock_slog = MagicMock()
+        mock_get_logger.return_value = mock_slog
 
         result = handle_empty_response(
             consecutive_count=1,
@@ -285,10 +288,13 @@ class TestGraduatedBanResponse(unittest.TestCase):
         mock_notify.assert_not_called()
 
     @patch('visa.send_notification')
-    @patch('visa.info_logger')
-    def test_notification_on_third_empty(self, mock_logger, mock_notify):
+    @patch('visa.get_logger')
+    def test_notification_on_third_empty(self, mock_get_logger, mock_notify):
         """Third consecutive empty should send warning notification."""
         from visa import handle_empty_response
+
+        mock_slog = MagicMock()
+        mock_get_logger.return_value = mock_slog
 
         result = handle_empty_response(
             consecutive_count=3,
@@ -302,10 +308,13 @@ class TestGraduatedBanResponse(unittest.TestCase):
         mock_notify.assert_called_once()
 
     @patch('visa.send_notification')
-    @patch('visa.info_logger')
-    def test_exit_on_fourth_empty(self, mock_logger, mock_notify):
+    @patch('visa.get_logger')
+    def test_exit_on_fourth_empty(self, mock_get_logger, mock_notify):
         """Fourth consecutive empty should trigger exit."""
         from visa import handle_empty_response
+
+        mock_slog = MagicMock()
+        mock_get_logger.return_value = mock_slog
 
         result = handle_empty_response(
             consecutive_count=4,

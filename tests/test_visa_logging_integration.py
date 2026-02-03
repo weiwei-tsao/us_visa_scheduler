@@ -144,15 +144,17 @@ class TestReloginLogging(unittest.TestCase):
         self.assertFalse(result)
 
 
+from selenium.common.exceptions import WebDriverException
+
 class TestGetDateWithRetryLogging(unittest.TestCase):
     """Test logging in get_date_with_retry function."""
 
     @patch('visa.driver')
     @patch('visa.get_logger')
-    def test_logs_network_error_on_webdriver_exception(self, mock_get_logger, mock_driver):
+    @patch('visa.time.sleep')
+    def test_logs_network_error_on_webdriver_exception(self, mock_sleep, mock_get_logger, mock_driver):
         """WebDriverException should log network_error."""
         from visa import get_date_with_retry
-        from selenium.common.exceptions import WebDriverException
 
         mock_logger = MagicMock()
         mock_get_logger.return_value = mock_logger
@@ -164,7 +166,8 @@ class TestGetDateWithRetryLogging(unittest.TestCase):
         with self.assertRaises(WebDriverException):
             get_date_with_retry(max_retries=2)
 
-        # Should log network_error for each retry
+        # Should log network_error for each retry (attempt 0 triggers log+sleep, attempt 1 raises)
+        # So call count should be 1
         self.assertEqual(mock_logger.network_error.call_count, 1)
 
 
