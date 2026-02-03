@@ -7,6 +7,8 @@ import sys
 import random
 from datetime import datetime
 
+from logger import init_logger, get_logger, LogCategory, OperationType
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
@@ -98,8 +100,6 @@ BAN_COOLDOWNS = load_ban_detection_config(config)
 
 # Proxy Configuration
 PROXY_ENABLED, PROXY_MANAGER = load_proxy_config(config)
-if PROXY_ENABLED and PROXY_MANAGER:
-    print(f"[PROXY] Loaded {PROXY_MANAGER.total_count} proxies (strategy: {PROXY_MANAGER.rotation_strategy})")
 
 def is_hard_ban_response(http_status, response_text):
     """
@@ -159,18 +159,18 @@ def get_ban_cooldown(consecutive_empty_count, http_status, cooldown_config, retr
         # 4+ consecutive empties = give up, exit
         return -1
 
-def handle_empty_response(consecutive_count, cooldown_config, log_file=None):
+def handle_empty_response(consecutive_count, cooldown_config):
     """
     Handle empty response with graduated cooldown.
 
     Args:
         consecutive_count: Number of consecutive empty responses
         cooldown_config: Dict with cooldown values
-        log_file: Optional log file path
 
     Returns:
         Dict with 'action' ('sleep' or 'exit') and 'duration' in seconds
     """
+    slog = get_logger()
     cooldown = get_ban_cooldown(
         consecutive_empty_count=consecutive_count,
         http_status=200,  # Empty array comes with 200
@@ -179,18 +179,13 @@ def handle_empty_response(consecutive_count, cooldown_config, log_file=None):
 
     if cooldown == -1:
         # Too many consecutive empties, exit
-        msg = f"[BAN] {consecutive_count} consecutive empty responses. Likely banned. Exiting."
-        print(msg)
-        if log_file:
-            info_logger(log_file, msg)
-        send_notification("BAN DETECTED", msg)
+        slog.ban_detected("consecutive_empty", 0, consecutive_count)
+        slog.error(LogCategory.BAN, f"{consecutive_count} consecutive empty responses. Likely banned. Exiting.")
+        send_notification("BAN DETECTED", f"{consecutive_count} consecutive empty responses. Likely banned.")
         return {'action': 'exit', 'duration': 0}
 
     # Log the graduated response
-    msg = f"[BAN] Empty response #{consecutive_count}. Waiting {cooldown // 60} minutes before retry."
-    print(msg)
-    if log_file:
-        info_logger(log_file, msg)
+    slog.ban_detected("empty_response", cooldown // 60, consecutive_count)
 
     # Only send notification on 3rd consecutive (warning before potential exit)
     if consecutive_count >= 3:
@@ -429,6 +424,7 @@ def init_driver(proxy_manager=None):
         proxy_manager: Optional ProxyManager instance for proxy support
     """
     global driver, proxy_extension_path
+    slog = get_logger()
 
     # Get proxy configuration if enabled
     proxy_args = []
@@ -437,11 +433,11 @@ def init_driver(proxy_manager=None):
     if proxy_manager and proxy_manager.has_proxies:
         proxy = proxy_manager.get_proxy()
         if proxy:
-            print(f"[PROXY] Using proxy: {proxy['host']}:{proxy['port']}")
+            slog.info(LogCategory.PROXY, f"Using proxy: {proxy['host']}:{proxy['port']}")
 
             # Check if proxy requires authentication
             if proxy_manager.requires_auth_extension(proxy):
-                print("[PROXY] Creating authentication extension...")
+                slog.info(LogCategory.PROXY, "Creating authentication extension")
                 proxy_extension = proxy_manager.create_proxy_auth_extension(proxy)
                 proxy_extension_path = proxy_extension
             else:
@@ -459,11 +455,10 @@ def init_driver(proxy_manager=None):
                 if proxy_extension:
                     options.add_extension(proxy_extension)
                 driver = uc.Chrome(options=options)
-                print("Initialized undetected-chromedriver (Stealth Mode)")
+                slog.info(LogCategory.SELENIUM, "Initialized undetected-chromedriver (Stealth Mode)")
                 return
             except Exception as e:
-                print(f"undetected-chromedriver failed: {e}")
-                print("Falling back to standard Selenium...")
+                slog.warning(LogCategory.SELENIUM, f"undetected-chromedriver failed: {e}, falling back to standard Selenium")
 
         # Fallback to standard Selenium
         try:
@@ -475,9 +470,9 @@ def init_driver(proxy_manager=None):
             if proxy_extension:
                 options.add_extension(proxy_extension)
             driver = webdriver.Chrome(options=options)
+            slog.info(LogCategory.SELENIUM, "Initialized standard Chrome driver")
         except Exception as e:
-            print(f"Failed to initialize Chrome with default driver: {e}")
-            print("Trying with webdriver-manager...")
+            slog.warning(LogCategory.SELENIUM, f"Standard Chrome failed: {e}, trying webdriver-manager")
             options = webdriver.ChromeOptions()
             if HEADLESS:
                 options.add_argument('--headless')
@@ -486,6 +481,7 @@ def init_driver(proxy_manager=None):
             if proxy_extension:
                 options.add_extension(proxy_extension)
             driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+            slog.info(LogCategory.SELENIUM, "Initialized Chrome via webdriver-manager")
     else:
         options = webdriver.ChromeOptions()
         if HEADLESS:
@@ -495,6 +491,7 @@ def init_driver(proxy_manager=None):
         if proxy_extension:
             options.add_extension(proxy_extension)
         driver = webdriver.Remote(command_executor=HUB_ADDRESS, options=options)
+        slog.info(LogCategory.SELENIUM, f"Initialized remote Chrome at {HUB_ADDRESS}")
 
 
 def rotate_proxy_and_restart():
@@ -505,25 +502,26 @@ def rotate_proxy_and_restart():
         True if successfully rotated, False if no more proxies available
     """
     global driver, PROXY_MANAGER
+    slog = get_logger()
 
     if not PROXY_ENABLED or not PROXY_MANAGER:
         return False
 
     if not PROXY_MANAGER.has_proxies:
-        print("[PROXY] No proxies configured")
+        slog.warning(LogCategory.PROXY, "No proxies configured")
         return False
 
     # Mark current proxy as potentially problematic and rotate
     current_proxy = PROXY_MANAGER.get_proxy()
-    if current_proxy:
-        print(f"[PROXY] Rotating away from {current_proxy['host']}:{current_proxy['port']}")
+    from_proxy = f"{current_proxy['host']}:{current_proxy['port']}" if current_proxy else "none"
 
     new_proxy = PROXY_MANAGER.rotate()
     if not new_proxy:
-        print("[PROXY] No more proxies available")
+        slog.proxy_exhausted()
         return False
 
-    print(f"[PROXY] Switched to {new_proxy['host']}:{new_proxy['port']}")
+    to_proxy = f"{new_proxy['host']}:{new_proxy['port']}"
+    slog.proxy_rotate(from_proxy, to_proxy, "ban_or_error")
 
     # Restart driver with new proxy
     try:
@@ -537,15 +535,15 @@ def rotate_proxy_and_restart():
 
 
 def send_notification(title, msg):
-    print(f"Sending notification!")
+    slog = get_logger()
     if SENDGRID_API_KEY:
         message = Mail(from_email=SENDGRID_EMAIL_SENDER, to_emails=USERNAME, subject=title, html_content=msg)
         try:
             sg = SendGridAPIClient(SENDGRID_API_KEY)
             response = sg.send(message)
-            print(f"Email sent - Status: {response.status_code}")
+            slog.info(LogCategory.SYSTEM, f"Email sent: {title}", http_status=response.status_code)
         except Exception as e:
-            print(f"SendGrid error: {str(e)}")
+            slog.error(LogCategory.NETWORK, f"SendGrid error: {e}", error=e)
 
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         def escape_html(text):
@@ -559,8 +557,9 @@ def send_notification(title, msg):
         }
         try:
             requests.post(telegram_url, data=telegram_data, timeout=5)
+            slog.info(LogCategory.SYSTEM, f"Telegram sent: {title}")
         except Exception as e:
-            print(f"Telegram error: {str(e)}")
+            slog.error(LogCategory.NETWORK, f"Telegram error: {e}", error=e)
 
 def auto_action(label, find_by, el_type, action, value, sleep_time=0):
     print("\t"+ label +":", end="")
@@ -587,6 +586,7 @@ def auto_action(label, find_by, el_type, action, value, sleep_time=0):
         time.sleep(sleep_time)
 
 def start_process():
+    slog = get_logger()
     driver.get(SIGN_IN_LINK)
     time.sleep(STEP_TIME)
     Wait(driver, 60).until(EC.presence_of_element_located((By.NAME, "commit")))
@@ -596,7 +596,7 @@ def start_process():
     auto_action("Privacy", "class", "icheckbox", "click", "", STEP_TIME)
     auto_action("Enter Panel", "name", "commit", "click", "", STEP_TIME)
     Wait(driver, 60).until(EC.presence_of_element_located((By.XPATH, "//a[contains(text(), '" + REGEX_CONTINUE + "')]")))
-    print("\n\tlogin successful!\n")
+    slog.login_success()
 
 def reschedule(date):
     """
@@ -659,12 +659,14 @@ def reschedule(date):
         return ["FAIL", f"Network error while booking: {e}"]
 
     # FIXED: Case-insensitive success detection
+    slog = get_logger()
     response_lower = r.text.lower()
     if 'successfully scheduled' in response_lower:
         return ["SUCCESS", f"Rescheduled Successfully! {date} {appointment_time}"]
     else:
-        # FIXED: Log response body for debugging
-        print(f"[BOOKING] Failed response (status {r.status_code}): {r.text[:500]}")
+        # Log response body for debugging
+        slog.warning(LogCategory.BOOKING, f"Failed response (status {r.status_code})",
+                     http_status=r.status_code, response_preview=r.text[:300])
         return ["FAIL", f"Reschedule Failed!!! {date} {appointment_time} (HTTP {r.status_code})"]
 
 def is_session_expired_error(error):
@@ -672,16 +674,19 @@ def is_session_expired_error(error):
     return any(x in error_str for x in ['expecting value', 'jsondecodeerror', 'empty response', '401', '403', 'unauthorized', 'session', 'expired'])
 
 def relogin():
+    slog = get_logger()
     try:
-        print("\n[SESSION] Session expired. Re-authenticating...")
+        slog.session_expired("API returned session error")
+        slog.relogin_attempt(1, 1)
         try:
             driver.get(SIGN_OUT_LINK)
             time.sleep(STEP_TIME)
         except: pass
         start_process()
+        slog.login_success()
         return True
     except Exception as e:
-        print(f"[SESSION] Re-login failed: {str(e)}")
+        slog.login_failed(e, 1, 1)
         return False
 
 def get_date_with_retry(max_retries=3):
@@ -697,6 +702,7 @@ def get_date_with_retry(max_retries=3):
     Raises:
         ValueError: If session expired or API returns invalid response
     """
+    slog = get_logger()
     for attempt in range(max_retries):
         try:
             # FIXED: Add null check for session cookie
@@ -715,7 +721,7 @@ def get_date_with_retry(max_retries=3):
                 if relogin(): continue
                 else: raise
             elif isinstance(e, WebDriverException) and attempt < max_retries - 1:
-                print(f"Network error (attempt {attempt+1}/{max_retries}): {e}")
+                slog.network_error("get_dates", e, attempt + 1, max_retries)
                 time.sleep(60) # Internal temporary network sleep
             else:
                 raise
@@ -734,6 +740,7 @@ def get_time_with_retry(date, max_retries=3):
     Raises:
         ValueError: If API returns empty or invalid response after retries
     """
+    slog = get_logger()
     for attempt in range(max_retries):
         try:
             time_url = TIME_URL % date
@@ -754,7 +761,7 @@ def get_time_with_retry(date, max_retries=3):
             available_times = data.get("available_times")
             if not available_times:
                 # No time slots available - slot may have been taken
-                print(f"[WARNING] No time slots available for {date} - slot may have been taken")
+                slog.warning(LogCategory.BOOKING, f"No time slots for {date} - slot may have been taken", date=date)
                 return None
 
             # FIXED: Return FIRST time slot (earliest) instead of last
@@ -793,33 +800,46 @@ def get_available_date(dates):
         date = extract_date(d)
         if date and is_in_period(date, PSD, PED):
             return date
-    print(f"\n\nNo available dates between ({PSD.date()}) and ({PED.date()})!")
-    return None  # Explicit return for clarity
-
-def info_logger(file_path, log):
-    with open(file_path, "a") as file:
-        file.write(str(datetime.now().time()) + ":\n" + log + "\n")
+    # No dates in target range - this is normal, not an error
+    slog = get_logger()
+    slog.info(LogCategory.BOOKING, f"No dates in target range ({PSD.date()} to {PED.date()})")
+    return None
 
 def cleanup_and_exit(exit_code):
+    slog = get_logger()
+    reasons = {
+        EXIT_WORK_LIMIT: "work_limit_reached",
+        EXIT_BAN: "ban_detected",
+        EXIT_NETWORK: "network_error"
+    }
+    slog.system_shutdown(reasons.get(exit_code, "unknown"), exit_code)
     try:
         if driver:
-            print("Closing Chrome Driver...")
             driver.quit()
     except:
         pass
-    print(f"Exiting with code {exit_code}")
     sys.exit(exit_code)
 
 if __name__ == "__main__":
     os.makedirs("logs", exist_ok=True)
-    LOG_FILE_NAME = os.path.join("logs", "log_" + str(datetime.now().date()) + ".txt")
+
+    # Initialize structured logger
+    slog = init_logger(log_dir="logs", app_name="visa_scheduler")
+    slog.system_start(config_summary={
+        "embassy": YOUR_EMBASSY,
+        "period_start": PRIOD_START,
+        "period_end": PRIOD_END,
+        "proxy_enabled": PROXY_ENABLED,
+        "headless": HEADLESS
+    })
 
     init_driver(PROXY_MANAGER if PROXY_ENABLED else None)
-    
-    session_divider = "\n" + "=" * 80 + "\n"
-    session_divider += f"NEW SESSION STARTED: {datetime.now()}\n"
-    session_divider += "=" * 80 + "\n"
-    info_logger(LOG_FILE_NAME, session_divider)
+
+    # Log proxy configuration if enabled
+    if PROXY_ENABLED and PROXY_MANAGER:
+        slog.proxy_loaded(PROXY_MANAGER.total_count, PROXY_MANAGER.rotation_strategy)
+
+    slog.session_start()
 
     # Startup notification
     startup_msg = f"Session started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.\n"
@@ -846,15 +866,13 @@ if __name__ == "__main__":
 
         while True:
             Req_count += 1
-            msg = "-" * 60 + f"\nRequest count: {Req_count}, Log time: {datetime.today()}\n"
-            print(msg)
-            info_logger(LOG_FILE_NAME, msg)
+            slog.set_request_count(Req_count)
 
             # Heartbeat notification every 20 requests
             if Req_count % 20 == 0:
                 running_mins = (time.time() - t0) / minute
-                heartbeat_msg = f"Still running. {Req_count} checks completed. Running for {running_mins:.0f} minutes."
-                send_notification("HEARTBEAT", heartbeat_msg)
+                slog.heartbeat(Req_count, running_mins)
+                send_notification("HEARTBEAT", f"Still running. {Req_count} checks. {running_mins:.0f} min.")
 
             try:
                 dates = get_date_with_retry()
@@ -870,17 +888,14 @@ if __name__ == "__main__":
 
                     result = handle_empty_response(
                         consecutive_count=consecutive_empty_count,
-                        cooldown_config=BAN_COOLDOWNS,
-                        log_file=LOG_FILE_NAME
+                        cooldown_config=BAN_COOLDOWNS
                     )
 
                     if result['action'] == 'exit':
                         # Before exiting, try rotating proxy if available (all strategies rotate on ban)
                         if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
                             if rotate_proxy_and_restart():
-                                msg = "[PROXY] Rotated proxy after ban detection, restarting session..."
-                                print(msg)
-                                info_logger(LOG_FILE_NAME, msg)
+                                slog.info(LogCategory.PROXY, "Rotated proxy after ban detection, restarting session")
                                 consecutive_empty_count = 0  # Reset counter with new proxy
                                 start_process()
                                 continue
@@ -892,69 +907,50 @@ if __name__ == "__main__":
 
                 # Got valid dates - reset consecutive empty counter
                 consecutive_empty_count = 0
-                
-                msg = "Available dates:\n"
-                for d in dates:
-                    date_val = d.get('date') if isinstance(d, dict) else d
-                    msg = msg + "%s" % date_val + ", "
-                print(msg)
-                info_logger(LOG_FILE_NAME, msg)
+                earliest = dates[0].get('date') if isinstance(dates[0], dict) else dates[0]
+                slog.dates_found(dates, earliest)
                 
                 date = get_available_date(dates)
                 if date:
+                    slog.reschedule_start(date)
                     send_notification("Rescheduling Started", date)
-                    
-                    # 关键：为 reschedule 添加独立的快速重试逻辑
+
+                    # Fast retry logic for reschedule
                     max_reschedule_retries = 3
                     res = None
                     for attempt in range(max_reschedule_retries):
                         try:
+                            slog.reschedule_attempt(date, attempt + 1, max_reschedule_retries)
                             res = reschedule(date)
-                            # 正常返回，跳出重试循环
                             break
                         except Exception as e:
-                            msg = f"[BOOKING] Reschedule attempt {attempt+1} failed with exception: {e}"
-                            print(msg)
-                            info_logger(LOG_FILE_NAME, msg)
-                            
+                            slog.reschedule_exception(date, e, attempt + 1, max_reschedule_retries)
+
                             if attempt < max_reschedule_retries - 1:
-                                # 还有重试机会：立即重新登录，然后重试
-                                msg = "[BOOKING] Attempting immediate session recovery..."
-                                print(msg)
+                                # Immediate session recovery
+                                slog.relogin_attempt(attempt + 1, max_reschedule_retries)
                                 try:
-                                    start_process()  # 重新登录
-                                    time.sleep(2)    # 极短暂等待，确保 session 稳定
-                                    continue         # 立即重试
+                                    start_process()
+                                    time.sleep(2)
+                                    continue
                                 except Exception as login_err:
-                                    msg = f"[BOOKING] Session recovery failed: {login_err}"
-                                    print(msg)
-                            
-                            # 重试耗尽，返回失败
+                                    slog.login_failed(login_err, attempt + 1, max_reschedule_retries)
+
                             res = ["FAIL", f"Exception after {max_reschedule_retries} attempts: {e}"]
-                    
+
                     if res is None:
                         res = ["FAIL", "Unknown error during rescheduling"]
 
                     send_notification(res[0], res[1])
 
-                    # FIXED: Only exit on SUCCESS, retry on failure
                     if res[0] == "SUCCESS":
-                        msg = f"[BOOKING] Successfully booked: {res[1]}"
-                        print(msg)
-                        info_logger(LOG_FILE_NAME, msg)
+                        # Extract time from message if possible
+                        slog.reschedule_success(date, res[1].split()[-1] if res[1] else "")
                         cleanup_and_exit(EXIT_WORK_LIMIT)
                     elif res[0] == "NO_SLOTS":
-                        # Race condition - slot was taken, continue polling
-                        msg = f"[BOOKING] Slot taken before booking: {res[1]}"
-                        print(msg)
-                        info_logger(LOG_FILE_NAME, msg)
-                        # Continue polling for next available slot
+                        slog.slot_taken(date)
                     else:
-                        # FAIL - log error but continue polling
-                        msg = f"[BOOKING] Booking failed: {res[1]}"
-                        print(msg)
-                        info_logger(LOG_FILE_NAME, msg)
-                        # Short cooldown before retry to avoid hammering on failure
+                        slog.reschedule_failed(date, res[1])
                         time.sleep(30)
                 else:
                     # Dates available but not in target range - only notify if date moved EARLIER
@@ -976,38 +972,26 @@ if __name__ == "__main__":
                 t1 = time.time()
                 total_time = t1 - t0
                 running_minutes = total_time/minute
-                msg = "\nWorking Time:  ~ {:.2f} minutes".format(running_minutes)
-                print(msg)
-                info_logger(LOG_FILE_NAME, msg)
-                
+
                 if total_time > WORK_LIMIT_TIME * hour:
-                    msg = f"Work limit reached ({WORK_LIMIT_TIME}h). Exiting for restart."
-                    print(msg)
-                    info_logger(LOG_FILE_NAME, msg)
+                    slog.work_limit_reached(running_minutes)
                     send_notification("WORK LIMIT", f"{WORK_LIMIT_TIME}h limit reached. Restarting immediately.")
                     cleanup_and_exit(EXIT_WORK_LIMIT)
-                
+
                 # Randomized Wait
                 RETRY_WAIT_TIME = random.uniform(RETRY_TIME_L_BOUND, RETRY_TIME_U_BOUND)
-                msg = "Retry Wait Time: {:.1f} seconds".format(RETRY_WAIT_TIME)
-                print(msg)
-                info_logger(LOG_FILE_NAME, msg)
                 time.sleep(RETRY_WAIT_TIME)
                 
             except Exception as e:
                 # Network or API errors
-                print(f"Error in loop: {e}")
                 network_retry_count += 1
+                slog.network_error("main_loop", e, network_retry_count, 3)
                 if network_retry_count >= 3:
-                     msg = "Max network retries exceeded."
-                     print(msg)
-                     info_logger(LOG_FILE_NAME, msg)
+                     slog.error(LogCategory.NETWORK, "Max network retries exceeded", error=e)
                      # Try rotating proxy before giving up
                      if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
                          if rotate_proxy_and_restart():
-                             msg = "[PROXY] Rotated proxy after network errors, restarting session..."
-                             print(msg)
-                             info_logger(LOG_FILE_NAME, msg)
+                             slog.info(LogCategory.PROXY, "Rotated proxy after network errors, restarting session")
                              network_retry_count = 0  # Reset counter with new proxy
                              consecutive_empty_count = 0
                              start_process()
@@ -1016,8 +1000,8 @@ if __name__ == "__main__":
                      send_notification("NETWORK ERROR", "Max retries exceeded. Script exiting. Will restart in 5 minutes.")
                      cleanup_and_exit(EXIT_NETWORK)
                 time.sleep(60) # Short sleep before loop retry
-                
+
     except Exception as e:
-        print(f"Top level exception: {e}")
+        slog.error(LogCategory.SYSTEM, f"Top level exception: {e}", error=e)
         send_notification("NETWORK ERROR", f"Top level exception: {e}. Script exiting. Will restart in 5 minutes.")
         cleanup_and_exit(EXIT_NETWORK)
