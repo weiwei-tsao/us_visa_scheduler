@@ -64,24 +64,39 @@
 
 ```
 us_visa_scheduler/
-├── visa.py                 # Main application (282 lines)
-├── embassy.py              # Embassy configurations (14 lines)
+├── visa.py                 # Main application
+├── embassy.py              # Embassy configurations
+├── logger.py               # Structured JSON logging system
+├── log_analyzer.py         # Log analysis and reporting tool
+├── proxy_manager.py        # Proxy rotation management
 ├── config.ini.example      # Configuration template
 ├── config.ini              # User configuration (gitignored)
 ├── requirements.txt        # Python dependencies
-├── README.md              # User documentation
-├── .gitignore             # Git ignore rules
-├── pyvenv.cfg             # Virtual environment config
-├── venv/                  # Python virtual environment
-├── logs/                  # Log files directory
-│   ├── .gitkeep           # Keeps directory in git
-│   └── log_*.txt          # Daily log files (gitignored)
-├── docs/                  # Documentation folder
-│   ├── README.md          # This file - comprehensive codebase analysis
+├── README.md               # User documentation
+├── .gitignore              # Git ignore rules
+├── run_visa.sh             # Bash wrapper script
+├── ecosystem.config.js     # PM2 process manager config
+├── venv/                   # Python virtual environment
+├── logs/                   # Log files directory
+│   ├── visa_scheduler.json.log    # Structured JSON logs (10MB rotation)
+│   ├── visa_scheduler.error.log   # Error-only logs
+│   ├── pm2-out.log                # PM2 stdout
+│   ├── pm2-error.log              # PM2 stderr
+│   └── .last_earliest_date        # Persistent state tracking
+├── tests/                  # Test suites
+│   ├── test_logger.py             # Logger unit tests (34 tests)
+│   ├── test_visa_logging_integration.py  # Logging integration tests (14 tests)
+│   ├── test_reschedule_retry.py   # Reschedule retry tests (23 tests)
+│   └── ...                        # Other test files
+├── docs/                   # Documentation folder
+│   ├── README.md                  # This file - comprehensive codebase analysis
+│   ├── logging-system.md          # Structured logging documentation
+│   ├── reschedule-retry-fix.md    # Reschedule retry mechanism documentation
+│   ├── IMPLEMENTATION_PLAN.md     # Active implementation plan
 │   ├── ANTI_DETECTION_AND_RELIABILITY_PLAN.md  # Future improvements roadmap
-│   ├── BOT_ANALYSIS_AND_PLAN.md    # Technical workflow analysis
-│   ├── PM2_DESIGN.md               # Process manager design decisions
-│   ├── RATE_LIMITING.md            # Rate limiting research & strategies
+│   ├── BOT_ANALYSIS_AND_PLAN.md   # Technical workflow analysis
+│   ├── PM2_DESIGN.md              # Process manager design decisions
+│   ├── RATE_LIMITING.md           # Rate limiting research & strategies
 │   └── SAFE_ARCHITECTURE_UPDATE.md # Stealth architecture documentation
 ```
 
@@ -91,7 +106,7 @@ us_visa_scheduler/
 
 ### 1. visa.py - Main Application
 
-**Location**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/visa.py`
+**Location**: `./visa.py`
 
 **Core Functions**:
 
@@ -105,9 +120,7 @@ us_visa_scheduler/
 | `send_notification(title, msg)` | 194-211 | Sends email via SendGrid |
 | `auto_action()` | 80-89 | Generic Selenium form helper |
 | `is_logged_in()` | 40-49 | Validates authentication status |
-| `info_logger()` | 28-37 | Writes to daily log files |
-
-**Main Loop**: Lines 214-282
+**Main Loop**: Lines 847-975
 - Infinite polling loop
 - Ban detection and recovery
 - Work/cooldown cycle management
@@ -116,7 +129,7 @@ us_visa_scheduler/
 
 ### 2. embassy.py - Embassy Configuration
 
-**Location**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/embassy.py`
+**Location**: `./embassy.py`
 
 **Structure**:
 ```python
@@ -132,7 +145,7 @@ Embassies = {
 
 ### 3. config.ini - User Configuration
 
-**Location**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/config.ini`
+**Location**: `./config.ini`
 
 **Configuration Sections**:
 
@@ -170,7 +183,7 @@ BAN_COOLDOWN_TIME = 5                  # Hours to wait if banned
 
 ### 4. requirements.txt - Dependencies
 
-**Location**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/requirements.txt`
+**Location**: `./requirements.txt`
 
 ```
 selenium==4.19.0           # Web automation framework
@@ -657,19 +670,69 @@ venv/               # Virtual environment
 
 ## Monitoring & Logging
 
-### Log File Structure
+### Structured JSON Logging System
 
-**Location**: `./logs/log_YYYY-MM-DD.txt`
+The application uses a structured JSON logging system (`logger.py`) for machine-parseable logs with automatic sensitive data redaction.
 
-**Format**:
+#### Log Files
+
+| File | Content | Rotation |
+|------|---------|----------|
+| `logs/visa_scheduler.json.log` | Structured JSON entries | 10MB, 5 backups, gzip |
+| `logs/visa_scheduler.error.log` | Errors only (text) | 5MB, 3 backups |
+| `logs/pm2-out.log` | PM2 stdout | via pm2-logrotate |
+| `logs/pm2-error.log` | PM2 stderr | via pm2-logrotate |
+
+#### Log Categories
+
 ```
-[YYYY-MM-DD HH:MM:SS] Event description
-[2026-01-16 10:30:15] Starting scheduler...
-[2026-01-16 10:30:40] Request count: 1
-[2026-01-16 10:30:42] Available dates: ['2026-07-15']
-[2026-01-16 10:30:42] No match found
-[2026-01-16 10:31:42] Request count: 2
-...
+SESSION   - Login, session expiry, relogin
+BOOKING   - Date queries, reschedule attempts
+NETWORK   - HTTP errors, timeouts
+PROXY     - Proxy rotation, health
+BAN       - Rate limiting detection
+SELENIUM  - WebDriver errors
+SYSTEM    - Startup, shutdown
+HEARTBEAT - Periodic status
+```
+
+#### JSON Log Format
+
+```json
+{
+  "timestamp": "2026-02-02T10:30:00.123456",
+  "level": "INFO",
+  "category": "BOOKING",
+  "message": "Found 5 available dates, earliest: 2026-02-10",
+  "session_id": "20260202_103000",
+  "request_count": 42,
+  "operation": "get_dates",
+  "extra": {"date_count": 5, "earliest": "2026-02-10"}
+}
+```
+
+#### Sensitive Data Redaction
+
+Automatically redacted patterns:
+- `_yatri_session` cookies
+- `password` fields
+- `token` / `api_key` values
+- Long cookie strings (20+ chars)
+
+#### Log Analysis
+
+```bash
+# Summary
+python log_analyzer.py
+
+# Errors only
+python log_analyzer.py --errors
+
+# Last 24 hours
+python log_analyzer.py --last 24h
+
+# Reschedule timeline
+python log_analyzer.py --reschedule
 ```
 
 ### Logged Events
@@ -678,10 +741,11 @@ venv/               # Virtual environment
 - Request counts
 - Available dates found
 - Target period matches
-- Reschedule attempts
+- Reschedule attempts (with retry count)
 - Work/cooldown cycles
-- Ban detections
-- Error messages
+- Ban detections (with category and cooldown)
+- Proxy rotation events
+- Error messages with stack traces
 - Notification sends
 
 ### Monitoring Best Practices
@@ -689,6 +753,7 @@ venv/               # Virtual environment
 2. **Monitor work time** to ensure cooldowns working
 3. **Track request counts** to avoid rate limiting
 4. **Review available dates** to adjust target period if needed
+5. **Analyze ban patterns** by hour to optimize polling times
 
 ---
 
@@ -837,12 +902,12 @@ pip install --upgrade webdriver-manager
 ## File Paths Reference
 
 ### Key Files
-- **Main Script**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/visa.py`
-- **Embassy Config**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/embassy.py`
-- **User Config**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/config.ini`
-- **Config Template**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/config.ini.example`
-- **Dependencies**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/requirements.txt`
-- **Documentation**: `/Users/caoweiwei/Documents/14_Repositories/us_visa_scheduler/README.md`
+- **Main Script**: `./visa.py`
+- **Embassy Config**: `./embassy.py`
+- **User Config**: `./config.ini`
+- **Config Template**: `./config.ini.example`
+- **Dependencies**: `./requirements.txt`
+- **Documentation**: `./README.md`
 
 ### Generated Files
 - **Virtual Environment**: `./venv/`
@@ -887,6 +952,8 @@ For issues and feature requests:
 
 | Document | Purpose |
 |----------|---------|
+| [logging-system.md](logging-system.md) | **New** - Structured JSON logging system documentation |
+| [reschedule-retry-fix.md](reschedule-retry-fix.md) | **New** - Reschedule fast retry mechanism and problem analysis |
 | [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) | **Active** - Phased implementation plan with test cases for anti-detection improvements |
 | [ANTI_DETECTION_AND_RELIABILITY_PLAN.md](ANTI_DETECTION_AND_RELIABILITY_PLAN.md) | Improvement roadmap: polling optimization, ban detection, proxy rotation |
 | [BOT_ANALYSIS_AND_PLAN.md](BOT_ANALYSIS_AND_PLAN.md) | Technical workflow analysis and hybrid approach documentation |
@@ -929,6 +996,6 @@ response = requests.post(url, headers=headers, data=data)
 
 ---
 
-**Document Version**: 1.1
-**Last Updated**: 2026-01-31
+**Document Version**: 1.2
+**Last Updated**: 2026-02-02
 **Generated By**: Claude Code (Automated Codebase Analysis)
