@@ -976,46 +976,59 @@ if __name__ == "__main__":
                     max_reschedule_retries = 3
                     res = None
                     cloudflare_detected = False
+                    last_recovery_action = None  # Track what recovery was attempted
+                    last_exception = None  # Track the last exception for better error messages
 
                     for attempt in range(max_reschedule_retries):
                         try:
                             slog.reschedule_attempt(date, attempt + 1, max_reschedule_retries)
                             res = reschedule(date)
+                            if res and res[0] == "SUCCESS":
+                                slog.info(LogCategory.BOOKING, f"Reschedule succeeded on attempt {attempt + 1}/{max_reschedule_retries}")
                             break
 
                         except TimeoutException as e:
+                            last_exception = e
                             slog.reschedule_exception(date, e, attempt + 1, max_reschedule_retries)
 
                             # Check for Cloudflare/WAF block
-                            if detect_cloudflare_block():
+                            cloudflare_detected = detect_cloudflare_block()
+                            if cloudflare_detected:
                                 slog.warning(LogCategory.PROXY, "Cloudflare/WAF block detected during reschedule")
-                                cloudflare_detected = True
 
                                 # Level 3: Rotate proxy immediately on block detection
                                 if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
                                     if rotate_proxy_and_restart():
-                                        slog.info(LogCategory.PROXY, "Rotated proxy due to block detection")
-                                        cloudflare_detected = False
+                                        last_recovery_action = "proxy_rotation_cloudflare"
+                                        slog.info(LogCategory.PROXY, f"Rotated proxy due to block detection (attempt {attempt + 1}/{max_reschedule_retries})")
                                         time.sleep(2)
                                         continue
+                                    else:
+                                        slog.warning(LogCategory.PROXY, "Proxy rotation failed, no more proxies available")
 
+                            # Recovery actions for non-last attempts
                             if attempt < max_reschedule_retries - 1:
                                 # Level 1: Try page refresh first (if no Cloudflare block)
                                 if not cloudflare_detected:
-                                    slog.info(LogCategory.SESSION, "Attempting page refresh (Level 1 recovery)")
+                                    slog.info(LogCategory.SESSION, f"Attempting page refresh (Level 1 recovery, attempt {attempt + 1}/{max_reschedule_retries})")
                                     try:
                                         driver.refresh()
                                         time.sleep(2)
                                         # Check if refresh resolved the issue
                                         if not detect_cloudflare_block():
+                                            last_recovery_action = "page_refresh"
                                             continue
-                                    except Exception:
-                                        pass
+                                        else:
+                                            slog.warning(LogCategory.SESSION, "Page refresh did not resolve the issue")
+                                    except Exception as refresh_err:
+                                        slog.warning(LogCategory.SESSION, f"Page refresh failed: {type(refresh_err).__name__}")
 
                                 # Level 2: Full re-login
                                 slog.relogin_attempt(attempt + 1, max_reschedule_retries)
                                 try:
                                     start_process()
+                                    last_recovery_action = "relogin"
+                                    slog.info(LogCategory.SESSION, f"Re-login successful (attempt {attempt + 1}/{max_reschedule_retries})")
                                     time.sleep(2)
                                     continue
                                 except Exception as login_err:
@@ -1024,12 +1037,18 @@ if __name__ == "__main__":
                                     # Level 3: Login also failed, try rotating proxy
                                     if PROXY_ENABLED and PROXY_MANAGER and PROXY_MANAGER.has_proxies:
                                         if rotate_proxy_and_restart():
-                                            slog.info(LogCategory.PROXY, "Rotated proxy after login failure")
+                                            last_recovery_action = "proxy_rotation_login_fail"
+                                            slog.info(LogCategory.PROXY, f"Rotated proxy after login failure (attempt {attempt + 1}/{max_reschedule_retries})")
                                             continue
+                                        else:
+                                            slog.warning(LogCategory.PROXY, "Proxy rotation failed after login failure")
 
-                            res = ["FAIL", f"TimeoutException after {max_reschedule_retries} attempts: {e}"]
+                            # Last attempt or all recovery failed - set failure result
+                            res = ["FAIL", f"TimeoutException after {attempt + 1} attempts"]
+                            slog.error(LogCategory.BOOKING, f"Reschedule retry loop exhausted: {res[1]}", extra={"recovery_attempted": last_recovery_action})
 
                         except Exception as e:
+                            last_exception = e
                             # Non-timeout exceptions: use standard recovery
                             slog.reschedule_exception(date, e, attempt + 1, max_reschedule_retries)
 
@@ -1037,15 +1056,26 @@ if __name__ == "__main__":
                                 slog.relogin_attempt(attempt + 1, max_reschedule_retries)
                                 try:
                                     start_process()
+                                    last_recovery_action = "relogin"
+                                    slog.info(LogCategory.SESSION, f"Re-login successful after exception (attempt {attempt + 1}/{max_reschedule_retries})")
                                     time.sleep(2)
                                     continue
                                 except Exception as login_err:
                                     slog.login_failed(login_err, attempt + 1, max_reschedule_retries)
 
-                            res = ["FAIL", f"Exception after {max_reschedule_retries} attempts: {e}"]
+                            res = ["FAIL", f"Exception after {attempt + 1} attempts: {type(e).__name__}"]
+                            slog.error(LogCategory.BOOKING, f"Reschedule failed with non-timeout exception: {res[1]}")
 
+                    # Handle case where loop exited via continue on last iteration (recovery succeeded but no more retries)
                     if res is None:
-                        res = ["FAIL", "Unknown error during rescheduling"]
+                        if last_recovery_action:
+                            # Recovery was performed on last attempt, will retry on next main loop iteration
+                            res = ["FAIL", f"Recovery ({last_recovery_action}) performed on last attempt, retrying on next cycle"]
+                            slog.warning(LogCategory.BOOKING, f"Reschedule incomplete: {res[1]}", extra={"last_exception": type(last_exception).__name__ if last_exception else None})
+                        else:
+                            # Truly unknown error - should not happen
+                            res = ["FAIL", "Unexpected error: no result after retry loop"]
+                            slog.error(LogCategory.BOOKING, "Reschedule ended with no result and no recovery action - this is a bug")
 
                     send_notification(res[0], res[1])
 

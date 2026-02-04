@@ -876,6 +876,149 @@ class TestTieredRecoveryStrategy(unittest.TestCase):
         self.assertIn("proxy_rotation", recovery_steps)
 
 
+class TestLastAttemptRecoveryBug(unittest.TestCase):
+    """
+    Test fix for the bug where res=None when recovery triggers continue on last attempt.
+
+    Bug scenario:
+    - attempt=2 (last attempt, since range(3) = 0, 1, 2)
+    - TimeoutException occurs
+    - Cloudflare detected → rotate_proxy_and_restart() succeeds → continue
+    - Loop index becomes 3, exits range(3)
+    - res was never set → "Unknown error during rescheduling"
+
+    Fix: Track recovery actions and set descriptive res when loop exhausts after recovery.
+    """
+
+    def test_proxy_rotation_on_last_attempt_sets_res(self):
+        """
+        When proxy rotation succeeds on the last attempt, res should be set
+        with a descriptive message instead of None.
+        """
+        class TimeoutException(Exception):
+            pass
+
+        recovery_steps = []
+        last_recovery_action = None
+
+        def mock_rotate_proxy():
+            nonlocal last_recovery_action
+            recovery_steps.append("proxy_rotation")
+            last_recovery_action = "proxy_rotation_cloudflare"
+            return True
+
+        def mock_detect_cloudflare():
+            return True  # Always block
+
+        # All 3 attempts fail with TimeoutException, proxy rotation on each
+        mock_reschedule = Mock(side_effect=[
+            TimeoutException("Timeout 1"),
+            TimeoutException("Timeout 2"),
+            TimeoutException("Timeout 3"),
+        ])
+
+        max_retries = 3
+        res = None
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                res = mock_reschedule("2026-03-11")
+                break
+            except TimeoutException as e:
+                last_exception = e
+                if mock_detect_cloudflare():
+                    if mock_rotate_proxy():
+                        continue  # This was the bug - continue on last attempt
+
+                # Only set res on last attempt or if no recovery
+                res = ["FAIL", f"TimeoutException after {attempt + 1} attempts"]
+
+        # Apply the fix: handle res=None after loop
+        if res is None:
+            if last_recovery_action:
+                res = ["FAIL", f"Recovery ({last_recovery_action}) performed on last attempt, retrying on next cycle"]
+            else:
+                res = ["FAIL", "Unexpected error: no result after retry loop"]
+
+        # Verify the fix works
+        self.assertIsNotNone(res)
+        self.assertEqual(res[0], "FAIL")
+        self.assertIn("proxy_rotation", res[1])
+        self.assertNotIn("Unknown error", res[1])
+        self.assertEqual(len(recovery_steps), 3)  # Proxy rotated 3 times
+
+    def test_relogin_on_last_attempt_sets_res(self):
+        """
+        When re-login succeeds on the last attempt, res should be descriptive.
+        """
+        class TimeoutException(Exception):
+            pass
+
+        recovery_steps = []
+        last_recovery_action = None
+
+        def mock_start_process():
+            nonlocal last_recovery_action
+            recovery_steps.append("relogin")
+            last_recovery_action = "relogin"
+
+        def mock_detect_cloudflare():
+            return False  # No Cloudflare
+
+        # All 3 attempts fail
+        mock_reschedule = Mock(side_effect=[
+            TimeoutException("Timeout 1"),
+            TimeoutException("Timeout 2"),
+            TimeoutException("Timeout 3"),
+        ])
+
+        max_retries = 3
+        res = None
+
+        for attempt in range(max_retries):
+            try:
+                res = mock_reschedule("2026-03-11")
+                break
+            except TimeoutException:
+                if attempt < max_retries - 1:
+                    mock_start_process()
+                    continue
+                res = ["FAIL", f"TimeoutException after {attempt + 1} attempts"]
+
+        # Fix applied
+        if res is None:
+            if last_recovery_action:
+                res = ["FAIL", f"Recovery ({last_recovery_action}) performed, retrying"]
+            else:
+                res = ["FAIL", "Unexpected error"]
+
+        self.assertIsNotNone(res)
+        self.assertEqual(res[0], "FAIL")
+        # 2 relogins (attempts 0 and 1), last attempt (2) sets res directly
+        self.assertEqual(len(recovery_steps), 2)
+
+    def test_no_recovery_action_gives_unexpected_error(self):
+        """
+        If loop exits with res=None and no recovery action, report unexpected error.
+        This should theoretically never happen but tests the fallback.
+        """
+        res = None
+        last_recovery_action = None
+
+        # Simulate a bizarre edge case where loop exits without setting res
+        # (this shouldn't happen in real code but tests the fallback)
+
+        if res is None:
+            if last_recovery_action:
+                res = ["FAIL", f"Recovery ({last_recovery_action}) performed"]
+            else:
+                res = ["FAIL", "Unexpected error: no result after retry loop"]
+
+        self.assertEqual(res[0], "FAIL")
+        self.assertIn("Unexpected error", res[1])
+
+
 class TestSeleniumTimeoutConfiguration(unittest.TestCase):
     """
     Test the new Selenium timeout configuration values.

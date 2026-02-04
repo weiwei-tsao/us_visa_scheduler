@@ -370,17 +370,37 @@ for attempt in range(max_reschedule_retries):
 
 4. **visa.py** - 添加 `TimeoutException` 导入
 
+### Bug 修复（2026-02-03 晚间）
+
+修复了 `res=None` 导致 "Unknown error during rescheduling" 的 bug：
+
+**问题**：当最后一次重试（attempt=2）触发代理轮换后执行 `continue`，循环退出但 `res` 从未赋值。
+
+**修复**：
+1. 添加 `last_recovery_action` 和 `last_exception` 跟踪变量
+2. 循环结束后检查恢复动作，生成描述性错误消息
+3. 增强日志，记录每个恢复步骤的详细信息
+
+```python
+if res is None:
+    if last_recovery_action:
+        res = ["FAIL", f"Recovery ({last_recovery_action}) performed on last attempt, retrying on next cycle"]
+    else:
+        res = ["FAIL", "Unexpected error: no result after retry loop"]
+```
+
 ### 测试验证
 
-- 新增 13 个测试用例覆盖：
+- 新增 16 个测试用例覆盖：
   - Cloudflare 检测（5 个）
   - 分层恢复策略（4 个）
   - 超时配置（4 个）
-- 全部 36 个测试通过
+  - 最后一次重试恢复 bug（3 个）
+- 全部 39 个测试通过
 
 ---
 
-## 七、后续优化（可选）
+## 八、后续优化（可选）
 
 | 优化项 | 描述 | 优先级 |
 |--------|------|--------|

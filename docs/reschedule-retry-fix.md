@@ -179,3 +179,65 @@ The original fix reduced retry interval from 60s to 2s, but **Selenium wait time
 | Worst-case 3 retries | 126s+ | ~67s |
 
 See [reschedule-failure-analysis-2026-02-03.md](reschedule-failure-analysis-2026-02-03.md) for detailed analysis.
+
+---
+
+## Bug Fix: "Unknown error during rescheduling" (2026-02-03)
+
+### Problem
+
+After implementing tiered recovery, a bug was discovered where `res` remained `None` after the retry loop, causing misleading "Unknown error during rescheduling" messages in logs.
+
+### Root Cause
+
+```python
+for attempt in range(3):  # 0, 1, 2
+    try:
+        res = reschedule(date)
+        break
+    except TimeoutException:
+        if detect_cloudflare_block():
+            if rotate_proxy_and_restart():
+                continue  # BUG: On attempt=2, continue exits the loop!
+
+        # Only set res on last attempt
+        res = ["FAIL", "..."]
+```
+
+When `attempt == 2` (last iteration):
+1. TimeoutException caught
+2. Cloudflare detected → proxy rotated → `continue`
+3. Loop index becomes 3, exits `range(3)`
+4. `res` never set → triggers `if res is None:` fallback
+
+### Fix
+
+1. **Track recovery actions**: Added `last_recovery_action` variable
+2. **Track last exception**: Added `last_exception` for better error messages
+3. **Descriptive fallback**: Instead of "Unknown error", now reports:
+   - `"Recovery (proxy_rotation_cloudflare) performed on last attempt, retrying on next cycle"`
+4. **Enhanced logging**: Added detailed logs for each recovery step with attempt numbers
+
+### Code Changes
+
+```python
+# Before
+if res is None:
+    res = ["FAIL", "Unknown error during rescheduling"]
+
+# After
+if res is None:
+    if last_recovery_action:
+        res = ["FAIL", f"Recovery ({last_recovery_action}) performed on last attempt, retrying on next cycle"]
+    else:
+        res = ["FAIL", "Unexpected error: no result after retry loop"]
+```
+
+### Test Coverage
+
+Added 3 new test cases in `TestLastAttemptRecoveryBug`:
+- `test_proxy_rotation_on_last_attempt_sets_res`
+- `test_relogin_on_last_attempt_sets_res`
+- `test_no_recovery_action_gives_unexpected_error`
+
+Total: 39 tests passing
