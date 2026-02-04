@@ -17,6 +17,9 @@ from urllib.parse import urlparse
 # Suppress SSL warnings for residential proxies that use SSL interception
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Default state file path for persisting proxy rotation index
+DEFAULT_STATE_FILE = os.path.join("logs", ".proxy_state.json")
+
 
 class ProxyManager:
     """
@@ -35,21 +38,28 @@ class ProxyManager:
         r'(?P<host>[^:]+):(?P<port>\d+)$'
     )
 
-    def __init__(self, proxy_list=None, rotation_strategy='round_robin'):
+    def __init__(self, proxy_list=None, rotation_strategy='round_robin', state_file=None):
         """
         Initialize proxy manager.
 
         Args:
             proxy_list: List of proxy URLs or path to file containing proxies
             rotation_strategy: 'round_robin', 'random', or 'on_ban'
+            state_file: Path to state file for persisting current_index (default: logs/.proxy_state.json)
         """
         self.rotation_strategy = rotation_strategy
         self.proxies = []
         self.failed_proxies = set()
         self.current_index = 0
+        self.state_file = state_file if state_file is not None else DEFAULT_STATE_FILE
 
         if proxy_list:
             self._load_proxies(proxy_list)
+
+        # Load persisted index for round_robin and on_ban strategies
+        # (random strategy should start fresh each time)
+        if self.rotation_strategy in ('round_robin', 'on_ban') and self.proxies:
+            self._load_state()
 
     def _load_proxies(self, proxy_list):
         """Load proxies from list or file."""
@@ -82,6 +92,42 @@ class ProxyManager:
                 parsed = self._parse_proxy(proxy)
                 if parsed:
                     self.proxies.append(parsed)
+
+    def _load_state(self):
+        """Load persisted current_index from state file."""
+        if not self.state_file:
+            return
+
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                    saved_index = state.get('current_index', 0)
+                    # Ensure index is within bounds (proxy list may have changed)
+                    if self.proxies:
+                        self.current_index = saved_index % len(self.proxies)
+                    else:
+                        self.current_index = 0
+        except (json.JSONDecodeError, IOError, TypeError):
+            # Invalid state file, use default
+            self.current_index = 0
+
+    def _save_state(self):
+        """Save current_index to state file."""
+        if not self.state_file:
+            return
+
+        try:
+            # Ensure directory exists
+            state_dir = os.path.dirname(self.state_file)
+            if state_dir:
+                os.makedirs(state_dir, exist_ok=True)
+
+            with open(self.state_file, 'w') as f:
+                json.dump({'current_index': self.current_index}, f)
+        except IOError:
+            # Failed to save state, continue without persistence
+            pass
 
     def _parse_proxy(self, proxy_url):
         """
@@ -146,6 +192,9 @@ class ProxyManager:
         else:
             # round_robin and on_ban both use sequential rotation
             self.current_index = (self.current_index + 1) % len(available)
+
+        # Persist the new index for next startup
+        self._save_state()
 
         return self.get_proxy()
 
@@ -402,12 +451,13 @@ chrome.webRequest.onAuthRequired.addListener(
         return f"ProxyManager(total={self.total_count}, available={self.available_count}, strategy={self.rotation_strategy})"
 
 
-def load_proxy_config(config):
+def load_proxy_config(config, state_file=None):
     """
     Load proxy configuration from ConfigParser.
 
     Args:
         config: ConfigParser object
+        state_file: Optional path to state file for index persistence
 
     Returns:
         Tuple of (enabled, ProxyManager or None)
@@ -434,7 +484,8 @@ def load_proxy_config(config):
     # Create manager
     manager = ProxyManager(
         proxy_list=proxy_list_raw,
-        rotation_strategy=strategy
+        rotation_strategy=strategy,
+        state_file=state_file
     )
 
     # Health check if enabled

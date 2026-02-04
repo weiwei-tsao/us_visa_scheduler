@@ -144,7 +144,7 @@ class TestFullFlowWithProxy(unittest.TestCase):
             'http://proxy2.example.com:8080',
             'http://proxy3.example.com:8080'
         ]
-        manager = ProxyManager(proxy_list=proxies, rotation_strategy='on_ban')
+        manager = ProxyManager(proxy_list=proxies, rotation_strategy='on_ban', state_file='')
 
         # Initial proxy
         initial = manager.get_proxy()
@@ -395,7 +395,7 @@ class TestEndToEndScenarios(unittest.TestCase):
             'http://proxy2.example.com:8080',
             'http://proxy3.example.com:8080'
         ]
-        manager = ProxyManager(proxy_list=proxies, rotation_strategy='on_ban')
+        manager = ProxyManager(proxy_list=proxies, rotation_strategy='on_ban', state_file='')
 
         rotation_sequence = []
         for _ in range(6):  # 2 full cycles

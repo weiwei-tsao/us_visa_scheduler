@@ -7,8 +7,11 @@ Tests proxy parsing, rotation strategies, health checking, and failover.
 import unittest
 from unittest.mock import patch, MagicMock
 import configparser
+import json
 import sys
 import os
+import tempfile
+import shutil
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -148,7 +151,7 @@ class TestRoundRobinRotation(unittest.TestCase):
             'http://proxy2.example.com:8080',
             'http://proxy3.example.com:8080'
         ]
-        manager = ProxyManager(proxy_list=proxies, rotation_strategy='round_robin')
+        manager = ProxyManager(proxy_list=proxies, rotation_strategy='round_robin', state_file='')
 
         # Initial proxy
         self.assertEqual(manager.get_proxy()['host'], 'proxy1.example.com')
@@ -175,7 +178,7 @@ class TestRoundRobinRotation(unittest.TestCase):
             'http://proxy1.example.com:8080',
             'http://proxy2.example.com:8080'
         ]
-        manager = ProxyManager(proxy_list=proxies, rotation_strategy='round_robin')
+        manager = ProxyManager(proxy_list=proxies, rotation_strategy='round_robin', state_file='')
 
         # Rotate 5 times with 2 proxies
         sequence = []
@@ -699,6 +702,203 @@ class TestProxyVerification(unittest.TestCase):
         manager = ProxyManager(proxy_list=proxies)
 
         self.assertEqual(manager.total_count, 3)
+
+
+class TestProxyStatePersistence(unittest.TestCase):
+    """Test proxy state persistence for round_robin strategy."""
+
+    def setUp(self):
+        """Create temporary directory for state files."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.state_file = os.path.join(self.temp_dir, '.proxy_state.json')
+        self.proxies = [
+            'http://proxy1.example.com:8080',
+            'http://proxy2.example.com:8080',
+            'http://proxy3.example.com:8080',
+        ]
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_save_state_creates_file(self):
+        """Saving state should create the state file."""
+        from proxy_manager import ProxyManager
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=self.state_file
+        )
+        manager.current_index = 2
+        manager._save_state()
+
+        self.assertTrue(os.path.exists(self.state_file))
+        with open(self.state_file, 'r') as f:
+            state = json.load(f)
+        self.assertEqual(state['current_index'], 2)
+
+    def test_load_state_restores_index(self):
+        """Loading state should restore the saved index."""
+        from proxy_manager import ProxyManager
+
+        # Create state file with index 1
+        with open(self.state_file, 'w') as f:
+            json.dump({'current_index': 1}, f)
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=self.state_file
+        )
+
+        self.assertEqual(manager.current_index, 1)
+
+    def test_round_robin_uses_persisted_index(self):
+        """Round robin strategy should start from persisted index."""
+        from proxy_manager import ProxyManager
+
+        # Create state file with index 2
+        with open(self.state_file, 'w') as f:
+            json.dump({'current_index': 2}, f)
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=self.state_file
+        )
+
+        # Should start at index 2 (proxy3)
+        proxy = manager.get_proxy()
+        self.assertEqual(proxy['host'], 'proxy3.example.com')
+
+    def test_random_strategy_ignores_persisted_index(self):
+        """Random strategy should not load persisted index."""
+        from proxy_manager import ProxyManager
+
+        # Create state file with index 2
+        with open(self.state_file, 'w') as f:
+            json.dump({'current_index': 2}, f)
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='random',
+            state_file=self.state_file
+        )
+
+        # Random strategy should start from 0 (not load persisted)
+        self.assertEqual(manager.current_index, 0)
+
+    def test_on_ban_strategy_uses_persisted_index(self):
+        """On ban strategy should start from persisted index."""
+        from proxy_manager import ProxyManager
+
+        # Create state file with index 1
+        with open(self.state_file, 'w') as f:
+            json.dump({'current_index': 1}, f)
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='on_ban',
+            state_file=self.state_file
+        )
+
+        self.assertEqual(manager.current_index, 1)
+
+    def test_invalid_state_file_defaults_to_zero(self):
+        """Invalid state file should default to index 0."""
+        from proxy_manager import ProxyManager
+
+        # Create invalid JSON file
+        with open(self.state_file, 'w') as f:
+            f.write('not valid json')
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=self.state_file
+        )
+
+        self.assertEqual(manager.current_index, 0)
+
+    def test_rotate_saves_state(self):
+        """Each rotation should save the new index."""
+        from proxy_manager import ProxyManager
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=self.state_file
+        )
+
+        # Rotate and verify state is saved
+        manager.rotate()
+        with open(self.state_file, 'r') as f:
+            state = json.load(f)
+        self.assertEqual(state['current_index'], 1)
+
+        manager.rotate()
+        with open(self.state_file, 'r') as f:
+            state = json.load(f)
+        self.assertEqual(state['current_index'], 2)
+
+    def test_state_file_directory_created(self):
+        """State file directory should be created if it doesn't exist."""
+        from proxy_manager import ProxyManager
+
+        nested_state_file = os.path.join(self.temp_dir, 'nested', 'dir', '.proxy_state.json')
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=nested_state_file
+        )
+
+        manager.rotate()
+        self.assertTrue(os.path.exists(nested_state_file))
+
+    def test_index_wraps_when_proxy_list_shrinks(self):
+        """Index should wrap if it exceeds the new proxy list size."""
+        from proxy_manager import ProxyManager
+
+        # Create state file with index 5 (larger than proxy list)
+        with open(self.state_file, 'w') as f:
+            json.dump({'current_index': 5}, f)
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,  # Only 3 proxies
+            rotation_strategy='round_robin',
+            state_file=self.state_file
+        )
+
+        # Index 5 % 3 = 2
+        self.assertEqual(manager.current_index, 2)
+
+    def test_no_state_file_starts_at_zero(self):
+        """Without state file, should start at index 0."""
+        from proxy_manager import ProxyManager
+
+        nonexistent_file = os.path.join(self.temp_dir, 'nonexistent.json')
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=nonexistent_file
+        )
+
+        self.assertEqual(manager.current_index, 0)
+
+    def test_state_file_none_disables_persistence(self):
+        """Setting state_file to empty string disables persistence."""
+        from proxy_manager import ProxyManager
+
+        manager = ProxyManager(
+            proxy_list=self.proxies,
+            rotation_strategy='round_robin',
+            state_file=''
+        )
+
+        manager.rotate()
+        # Should not create any state file
+        self.assertFalse(os.path.exists(self.state_file))
 
 
 if __name__ == '__main__':
