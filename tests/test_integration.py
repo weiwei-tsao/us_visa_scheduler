@@ -69,26 +69,23 @@ class TestFullFlowNoProxy(unittest.TestCase):
 
         cooldown_config = DEFAULT_BAN_COOLDOWNS.copy()
 
-        # First empty - short cooldown
-        with patch('visa.send_notification'):
+        with patch('visa.send_notification'), patch('visa.get_logger'):
+            # First empty - short cooldown
             result1 = handle_empty_response(1, cooldown_config)
             self.assertEqual(result1['action'], 'sleep')
             self.assertEqual(result1['duration'], 5 * 60)  # 5 minutes
 
-        # Second empty - medium cooldown
-        with patch('visa.send_notification'):
+            # Second empty - medium cooldown
             result2 = handle_empty_response(2, cooldown_config)
             self.assertEqual(result2['action'], 'sleep')
             self.assertEqual(result2['duration'], 30 * 60)  # 30 minutes
 
-        # Third empty - long cooldown
-        with patch('visa.send_notification'):
+            # Third empty - long cooldown
             result3 = handle_empty_response(3, cooldown_config)
             self.assertEqual(result3['action'], 'sleep')
             self.assertEqual(result3['duration'], 120 * 60)  # 2 hours
 
-        # Fourth empty - exit
-        with patch('visa.send_notification'):
+            # Fourth empty - exit
             result4 = handle_empty_response(4, cooldown_config)
             self.assertEqual(result4['action'], 'exit')
 
@@ -220,32 +217,7 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(upper, DEFAULT_RETRY_TIME_U_BOUND)
 
 
-class TestLoggingFormat(unittest.TestCase):
-    """Test logging format for analysis scripts."""
 
-    def test_ban_response_logging(self):
-        """Ban responses should log in parseable format."""
-        from visa import handle_empty_response, DEFAULT_BAN_COOLDOWNS
-        import tempfile
-        import os
-
-        cooldown_config = DEFAULT_BAN_COOLDOWNS.copy()
-
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
-            log_file = f.name
-
-        try:
-            with patch('visa.send_notification'):
-                handle_empty_response(1, cooldown_config, log_file=log_file)
-
-            with open(log_file, 'r') as f:
-                content = f.read()
-
-            # Should contain BAN marker for parsing
-            self.assertIn('[BAN]', content)
-            self.assertIn('Empty response', content)
-        finally:
-            os.unlink(log_file)
 
 
 class TestHardBanDetection(unittest.TestCase):
@@ -398,7 +370,7 @@ class TestEndToEndScenarios(unittest.TestCase):
         consecutive_empty = 0
 
         # Simulate series of empty responses
-        with patch('visa.send_notification'):
+        with patch('visa.send_notification'), patch('visa.get_logger'):
             # First empty - short wait
             consecutive_empty += 1
             result = handle_empty_response(consecutive_empty, cooldown_config)

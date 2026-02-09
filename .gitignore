@@ -7,3 +7,5 @@ __pycache__
 log_*.txt
 logs/*.txt
 logs/*.log
+logs/*.gz
+.DS_Store

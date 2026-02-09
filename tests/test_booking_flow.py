@@ -27,26 +27,14 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock all external dependencies BEFORE importing visa
-mock_modules = {
-    'selenium': MagicMock(),
-    'selenium.webdriver': MagicMock(),
-    'selenium.webdriver.chrome.service': MagicMock(),
-    'selenium.webdriver.support': MagicMock(),
-    'selenium.webdriver.support.expected_conditions': MagicMock(),
-    'selenium.webdriver.support.ui': MagicMock(),
-    'selenium.webdriver.common.by': MagicMock(),
-    'selenium.common.exceptions': MagicMock(),
-    'webdriver_manager': MagicMock(),
-    'webdriver_manager.chrome': MagicMock(),
-    'requests': MagicMock(),
-    'sendgrid': MagicMock(),
-    'sendgrid.helpers.mail': MagicMock(),
-    'undetected_chromedriver': None,  # Simulate import failure
-}
-
-# Apply mocks
-for mod_name, mock_obj in mock_modules.items():
-    sys.modules[mod_name] = mock_obj
+# Mocking removed to prevent pollution of sys.modules which breaks other tests.
+# If mocks are needed, use patch.dict('sys.modules', ...) context managers within specific tests.
+# mock_modules = {
+#     'selenium': MagicMock(),
+#     ...
+# }
+# for mod_name, mock_obj in mock_modules.items():
+#     sys.modules[mod_name] = mock_obj
 
 # Mock configparser to avoid reading real config.ini
 mock_config = MagicMock()

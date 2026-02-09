@@ -333,9 +333,24 @@ Smart cooldown distinguishes between real bans and false positives (temporary gl
 
 ## Log Analysis
 
-### Application Logs
+### Structured JSON Logs
 
-Daily logs stored in `logs/log_YYYY-MM-DD.txt`. Analyze with:
+JSON logs stored in `logs/visa_scheduler.json.log`. Analyze with:
+
+```bash
+python3 log_analyzer.py
+```
+
+Output from [log_analyzer.py](log_analyzer.py):
+- Total log entries by level and category
+- Error summary with timestamps
+- Ban pattern analysis (by hour)
+- Reschedule attempt timeline
+- Session statistics
+
+### Legacy Application Logs
+
+Daily text logs (if still generated) stored in `logs/log_YYYY-MM-DD.txt`. Analyze with:
 
 ```bash
 python3 analyze_logs.py
@@ -364,10 +379,25 @@ Output from [analyze_pm2.py](analyze_pm2.py):
 
 | File | Description |
 |------|-------------|
-| `logs/log_YYYY-MM-DD.txt` | Application logs |
+| `logs/visa_scheduler.json.log` | Structured JSON logs (10MB rotation, 5 backups, gzip) |
+| `logs/visa_scheduler.error.log` | Error-only logs (5MB rotation, 3 backups) |
 | `logs/pm2-out.log` | PM2 standard output |
 | `logs/pm2-error.log` | PM2 error output |
 | `logs/.last_earliest_date` | Persistent state (last notified date) |
+
+### Structured Logging
+
+The application uses structured JSON logging with automatic sensitive data redaction. Log categories include: SESSION, BOOKING, NETWORK, PROXY, BAN, SELENIUM, SYSTEM, HEARTBEAT.
+
+```bash
+# Analyze logs
+python log_analyzer.py              # Summary
+python log_analyzer.py --errors     # Errors only
+python log_analyzer.py --last 24h   # Last 24 hours
+python log_analyzer.py --reschedule # Reschedule timeline
+```
+
+See [docs/logging-system.md](docs/logging-system.md) for detailed documentation.
 
 ## Testing
 
@@ -383,6 +413,9 @@ pytest tests/ --cov=.
 ```
 
 Test suites in [tests/](tests/):
+- `test_logger.py` - Structured logger unit tests (34 tests)
+- `test_visa_logging_integration.py` - Logging integration tests (14 tests)
+- `test_reschedule_retry.py` - Reschedule retry mechanism tests (23 tests)
 - `test_ban_detection.py` - Ban detection system
 - `test_booking_flow.py` - Booking workflow edge cases
 - `test_booking_execution.py` - End-to-end booking
@@ -396,10 +429,12 @@ Test suites in [tests/](tests/):
 
 ```
 us_visa_scheduler/
-├── visa.py                 # Main application (979 lines)
+├── visa.py                 # Main application
 ├── embassy.py              # Embassy definitions
+├── logger.py               # Structured JSON logging system
+├── log_analyzer.py         # JSON log analysis and reporting
 ├── proxy_manager.py        # Proxy management system
-├── analyze_logs.py         # Log analysis utility
+├── analyze_logs.py         # Legacy log analysis utility
 ├── analyze_pm2.py          # PM2 execution analysis
 ├── config.ini              # Active configuration
 ├── config.ini.example      # Configuration template
@@ -408,15 +443,22 @@ us_visa_scheduler/
 ├── ecosystem.config.js     # PM2 process manager config
 ├── status.sh               # Quick status checker
 ├── logs/                   # Log files and persistent state
-│   ├── log_YYYY-MM-DD.txt  # Daily application logs
-│   ├── pm2-out.log         # PM2 stdout
-│   ├── pm2-error.log       # PM2 stderr
-│   └── .last_earliest_date # Persistent state file
+│   ├── visa_scheduler.json.log    # Structured JSON logs (10MB rotation)
+│   ├── visa_scheduler.error.log   # Error-only logs
+│   ├── pm2-out.log                # PM2 stdout
+│   ├── pm2-error.log              # PM2 stderr
+│   └── .last_earliest_date        # Persistent state file
 ├── tests/                  # Test suite
 │   ├── conftest.py         # Pytest fixtures
-│   ├── test_*.py           # Test files
+│   ├── test_logger.py      # Logger unit tests (34 tests)
+│   ├── test_visa_logging_integration.py  # Logging integration (14 tests)
+│   ├── test_reschedule_retry.py   # Reschedule retry tests (23 tests)
+│   ├── test_*.py           # Other test files
 │   └── mocks/              # Mock response data
 └── docs/                   # Additional documentation
+    ├── README.md           # Comprehensive codebase analysis
+    ├── logging-system.md   # Structured logging documentation
+    └── reschedule-retry-fix.md  # Reschedule retry mechanism
 ```
 
 ## Troubleshooting

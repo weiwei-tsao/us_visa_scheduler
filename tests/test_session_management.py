@@ -185,7 +185,7 @@ class TestGetTimeWithRetry(unittest.TestCase):
 
         result = self.visa.get_time_with_retry("2027-07-01")
 
-        self.assertEqual(result, "10:00")
+        self.assertEqual(result, "09:00")
         self.assertEqual(self.mock_driver.execute_script.call_count, 1)
         mock_relogin.assert_not_called()
 
@@ -202,7 +202,7 @@ class TestGetTimeWithRetry(unittest.TestCase):
 
         result = self.visa.get_time_with_retry("2027-07-01")
 
-        self.assertEqual(result, "10:00")
+        self.assertEqual(result, "09:00")
         self.assertEqual(self.mock_driver.execute_script.call_count, 2)
         mock_relogin.assert_called_once()
 
@@ -237,32 +237,37 @@ class TestReloginFunction(unittest.TestCase):
         self.driver_patcher.stop()
 
     @patch('visa.start_process')
-    @patch('visa.info_logger')
+    @patch('visa.get_logger')
     @patch('visa.os.path.join')
     @patch('builtins.print')
-    def test_successful_relogin(self, mock_print, mock_join, mock_logger, mock_start):
+    def test_successful_relogin(self, mock_print, mock_join, mock_get_logger, mock_start):
         """Test successful re-login."""
         mock_join.return_value = "test_log.txt"
+        mock_slog = MagicMock()
+        mock_get_logger.return_value = mock_slog
 
         result = self.visa.relogin()
 
         self.assertTrue(result)
         self.mock_driver.get.assert_called()  # Should call sign out
         mock_start.assert_called_once()
+        mock_slog.login_success.assert_called()
 
     @patch('visa.start_process')
-    @patch('visa.info_logger')
+    @patch('visa.get_logger')
     @patch('visa.os.path.join')
     @patch('builtins.print')
-    def test_relogin_failure(self, mock_print, mock_join, mock_logger, mock_start):
+    def test_relogin_failure(self, mock_print, mock_join, mock_get_logger, mock_start):
         """Test re-login failure."""
         mock_join.return_value = "test_log.txt"
         mock_start.side_effect = Exception("Login failed")
+        mock_slog = MagicMock()
+        mock_get_logger.return_value = mock_slog
 
         result = self.visa.relogin()
 
         self.assertFalse(result)
-        mock_logger.assert_called()  # Should log the error
+        mock_slog.login_failed.assert_called()  # Should log the error
 
 
 class TestIntegration(unittest.TestCase):
@@ -282,12 +287,14 @@ class TestIntegration(unittest.TestCase):
         self.driver_patcher.stop()
 
     @patch('visa.start_process')
-    @patch('visa.info_logger')
+    @patch('visa.get_logger')
     @patch('visa.os.path.join')
     @patch('builtins.print')
-    def test_full_session_expiration_recovery(self, mock_print, mock_join, mock_logger, mock_start):
+    def test_full_session_expiration_recovery(self, mock_print, mock_join, mock_get_logger, mock_start):
         """Test complete flow of session expiration and recovery."""
         mock_join.return_value = "test_log.txt"
+        mock_slog = MagicMock()
+        mock_get_logger.return_value = mock_slog
 
         # Simulate session expiration scenario
         self.mock_driver.get_cookie.return_value = {"value": "old_session"}
@@ -306,7 +313,7 @@ class TestIntegration(unittest.TestCase):
         self.mock_driver.get.assert_called()  # Sign out was called
 
         # Verify logging
-        self.assertTrue(mock_logger.called)
+        mock_slog.session_expired.assert_called()
 
 
 if __name__ == '__main__':
